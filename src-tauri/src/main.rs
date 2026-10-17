@@ -9,5 +9,16 @@ fn main() {
         return;
     }
 
+    // Elevated one-shot helper: registers/deletes the admin autostart task on
+    // behalf of a non-elevated Sidearm, then exits with the result code.
+    #[cfg(target_os = "windows")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(pos) = args.iter().position(|arg| arg == sidearm_lib::ADMIN_AUTOSTART_HELPER_ARG) {
+            let action = args.get(pos + 1).map(String::as_str);
+            std::process::exit(sidearm_lib::admin_autostart_helper_main(action));
+        }
+    }
+
     sidearm_lib::run()
 }

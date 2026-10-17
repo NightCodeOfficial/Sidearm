@@ -50,6 +50,8 @@ type CurrentGlobalShortcut = Arc<Mutex<Option<String>>>;
 
 use capture_backend::RuntimeController;
 pub use capture_backend::capture_helper_main;
+#[cfg(target_os = "windows")]
+pub use admin_autostart::{HELPER_ARG as ADMIN_AUTOSTART_HELPER_ARG, helper_main as admin_autostart_helper_main};
 use command_error::CommandError;
 use config::{
     AppConfig, ConfigStoreError, DEFAULT_GLOBAL_SHORTCUT, LoadConfigResponse, SaveConfigResponse,
@@ -1910,15 +1912,20 @@ async fn get_admin_autostart_status() -> Result<admin_autostart::AdminAutostartS
 async fn set_admin_autostart(
     enabled: bool,
 ) -> Result<admin_autostart::AdminAutostartStatus, CommandError> {
-    let result = if enabled {
-        admin_autostart::enable()
-    } else {
-        admin_autostart::disable()
-    };
-    if let Err(message) = result {
-        return Err(CommandError::new("admin_autostart_failed", message, None));
-    }
-    Ok(admin_autostart::query())
+    // Blocking: a non-elevated Sidearm waits for its elevated helper (UAC).
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = if enabled {
+            admin_autostart::enable()
+        } else {
+            admin_autostart::disable()
+        };
+        if let Err(message) = result {
+            return Err(CommandError::new("admin_autostart_failed", message, None));
+        }
+        Ok(admin_autostart::query())
+    })
+    .await
+    .map_err(|e| CommandError::internal(format!("set_admin_autostart task failed: {e}")))?
 }
 
 /// Re-launch Sidearm with administrator privileges and exit the current

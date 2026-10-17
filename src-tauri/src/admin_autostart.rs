@@ -8,9 +8,13 @@
 //! the higher-level `windows` crate for safer interface dispatch:
 //!   - **Query** (no UAC): in-proc `ITaskService` via `CoCreateInstance` →
 //!     `GetFolder("\\")` → `GetTask` → read `IRegisteredTask::Xml`.
-//!   - **Create / delete** (UAC once per toggle): elevated `ITaskService`
-//!     via the `Elevation:Administrator!new:{CLSID}` COM moniker, then
-//!     normal `ITaskFolder::RegisterTask` / `DeleteTask`.
+//!   - **Create / delete** need admin rights. An elevated Sidearm registers
+//!     the task in-process. A non-elevated one starts its own exe elevated
+//!     (`runas`, one UAC prompt) with `--admin-autostart enable|disable`
+//!     ([`HELPER_ARG`], [`helper_main`]) and waits for its exit code. The
+//!     `Elevation:Administrator!new:{CLSID}` COM moniker cannot be used: the
+//!     Task Scheduler class is not registered for elevated activation
+//!     (measured: `CO_E_ELEVATION_DISABLED`, 0x80080017, on every call).
 //!
 //! **Hash pin.** The task does not start Sidearm.exe directly. It runs the
 //! system `powershell.exe` (System32, admin-only writable) with a verifier
@@ -30,8 +34,8 @@
 //! (`LoadLibrary`), is not caught: the pin is checked only at start. Full
 //! protection needs the exe in an admin-only folder (Program Files).
 //!
-//! Result: a single UAC prompt at toggle time, **zero** external processes
-//! spawned by Sidearm, zero console flashes.
+//! Result: a single UAC prompt at toggle time and no console flashes (the
+//! elevated helper is Sidearm's own GUI-subsystem exe).
 
 use std::path::Path;
 use std::sync::LazyLock;
@@ -112,8 +116,29 @@ pub fn query() -> AdminAutostartStatus {
     }
 }
 
+/// Command-line flag that turns Sidearm.exe into the elevated helper.
+pub const HELPER_ARG: &str = "--admin-autostart";
+/// Helper exit code for a failure that has no HRESULT (e.g. the `%` path).
+const HELPER_EXIT_FAILED: i32 = 1;
+
 #[cfg(target_os = "windows")]
 pub fn enable() -> Result<(), String> {
+    if !crate::window_capture::is_current_process_elevated() {
+        return run_elevated_helper("enable");
+    }
+    enable_elevated()
+}
+
+#[cfg(target_os = "windows")]
+pub fn disable() -> Result<(), String> {
+    if !crate::window_capture::is_current_process_elevated() {
+        return run_elevated_helper("disable");
+    }
+    win::delete_task(TASK_NAME)
+}
+
+#[cfg(target_os = "windows")]
+fn enable_elevated() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let exe_path = exe.to_string_lossy();
     // Task Scheduler expands %VAR% inside Arguments/WorkingDirectory and has
@@ -125,12 +150,72 @@ pub fn enable() -> Result<(), String> {
     }
     let manifest = current_pin_manifest(&exe)?;
     let xml = task_definition_xml(&exe_path, &manifest);
-    win::register_task_elevated(TASK_NAME, &xml)
+    win::register_task(TASK_NAME, &xml)
 }
 
+/// Entry point of the elevated helper (`Sidearm.exe --admin-autostart <action>`).
+/// Returns the process exit code: `0` on success, the failing HRESULT when
+/// there is one, [`HELPER_EXIT_FAILED`] otherwise. No file is written: an
+/// elevated process writing to a path a non-elevated one chose could be
+/// redirected by a planted link.
 #[cfg(target_os = "windows")]
-pub fn disable() -> Result<(), String> {
-    win::delete_task_elevated(TASK_NAME)
+pub fn helper_main(action: Option<&str>) -> i32 {
+    let result = match action {
+        Some("enable") => enable_elevated(),
+        Some("disable") => win::delete_task(TASK_NAME),
+        _ => Err("unknown admin-autostart action".into()),
+    };
+    match result {
+        Ok(()) => 0,
+        Err(message) => win::hresult_in(&message).unwrap_or(HELPER_EXIT_FAILED),
+    }
+}
+
+/// Runs this exe elevated as the helper and waits for it. One UAC prompt.
+#[cfg(target_os = "windows")]
+fn run_elevated_helper(action: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
+    use windows_sys::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+
+    const ERROR_CANCELLED: u32 = 1223;
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
+    let file = wide(&exe.to_string_lossy());
+    let verb = wide("runas");
+    let params = wide(&format!("{HELPER_ARG} {action}"));
+
+    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = verb.as_ptr();
+    info.lpFile = file.as_ptr();
+    info.lpParameters = params.as_ptr();
+    info.nShow = 0; // SW_HIDE — the helper has no window anyway
+    if unsafe { ShellExecuteExW(&mut info) } == 0 {
+        let error = unsafe { GetLastError() };
+        return Err(if error == ERROR_CANCELLED {
+            "Запуск от администратора отменён в UAC.".into()
+        } else {
+            format!("ShellExecuteExW(runas): error {error}")
+        });
+    }
+    if info.hProcess.is_null() {
+        return Err("ShellExecuteExW(runas) returned no process handle".into());
+    }
+    let mut code: u32 = 0;
+    unsafe {
+        WaitForSingleObject(info.hProcess, INFINITE);
+        GetExitCodeProcess(info.hProcess, &mut code);
+        CloseHandle(info.hProcess);
+    }
+    match code {
+        0 => Ok(()),
+        c if c as i32 == HELPER_EXIT_FAILED => Err(
+            "Автозапуск от администратора не настроен (повышенный процесс завершился с ошибкой).".into(),
+        ),
+        c => Err(format!("Автозапуск от администратора не настроен: 0x{c:08X}")),
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -256,7 +341,10 @@ fn task_arguments(exe_path: &str, manifest: &[(String, String)], start: bool) ->
 /// running the hash-pin verifier, which starts Sidearm) + RunLevel=HighestAvailable.
 /// `DisallowStartIfOnBatteries=false` and `StopIfGoingOnBatteries=false` keep
 /// the task active on laptops; default Task Scheduler settings would prevent
-/// startup when not plugged in.
+/// startup when not plugged in. Every element must exist in the declared
+/// schema `version="1.2"`: Task Scheduler rejects the whole task otherwise
+/// (measured: `UseUnifiedSchedulingEngine`, a 1.6 element, failed every
+/// registration with 0x80041316 "unexpected node").
 fn task_definition_xml(exe_path: &str, manifest: &[(String, String)]) -> String {
     let (dir, _) = split_exe_path(exe_path);
     let arguments = xml_escape(&task_arguments(exe_path, manifest, true));
@@ -289,7 +377,6 @@ fn task_definition_xml(exe_path: &str, manifest: &[(String, String)]) -> String 
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Priority>7</Priority>
@@ -381,17 +468,16 @@ fn parse_registered_task(xml: &str) -> Option<RegisteredTask> {
 mod win {
     use super::{RegisteredTask, TASK_NAME, parse_registered_task};
     use windows::Win32::System::Com::{
-        BIND_OPTS, BIND_OPTS3, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance,
-        CoGetObject, CoInitializeEx, CoUninitialize,
+        CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+        CoUninitialize,
     };
     use windows::Win32::System::TaskScheduler::{
         ITaskFolder, ITaskService, TASK_CREATE_OR_UPDATE, TASK_LOGON_INTERACTIVE_TOKEN,
         TaskScheduler,
     };
     use windows::Win32::System::Variant::VARIANT;
-    use windows::core::{BSTR, GUID, PCWSTR};
+    use windows::core::BSTR;
 
-    const HR_ERROR_CANCELLED: u32 = 0x8007_04C7; // user clicked No on UAC
     const HR_FILE_NOT_FOUND: u32 = 0x8007_0002; // task doesn't exist
     const HR_RPC_E_CHANGED_MODE: u32 = 0x8001_0106;
 
@@ -420,53 +506,11 @@ mod win {
         unsafe { CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER) }
     }
 
-    /// Get an elevated ITaskService via Windows' COM elevation moniker.
-    /// Triggers a UAC prompt; the rest of the Sidearm process stays Medium-IL.
-    fn create_elevated_service() -> Result<ITaskService, String> {
-        let moniker_str = format!(
-            "Elevation:Administrator!new:{{{}}}",
-            guid_to_string(&TaskScheduler)
-        );
-        let moniker: Vec<u16> = moniker_str
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // BIND_OPTS3 -> BIND_OPTS2 -> BIND_OPTS is the layout windows-rs exposes.
-        let mut bind_opts3 = BIND_OPTS3::default();
-        bind_opts3.Base.Base.cbStruct = std::mem::size_of::<BIND_OPTS3>() as u32;
-        bind_opts3.Base.dwClassContext = CLSCTX_INPROC_SERVER.0;
-
-        let result: windows::core::Result<ITaskService> = unsafe {
-            CoGetObject(
-                PCWSTR(moniker.as_ptr()),
-                Some(&bind_opts3 as *const _ as *const BIND_OPTS),
-            )
-        };
-        result.map_err(|e| {
-            if e.code().0 as u32 == HR_ERROR_CANCELLED {
-                "Запуск от администратора отменён в UAC.".into()
-            } else {
-                format!("CoGetObject(elevation): 0x{:08X}", e.code().0)
-            }
-        })
-    }
-
-    fn guid_to_string(g: &GUID) -> String {
-        format!(
-            "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-            g.data1,
-            g.data2,
-            g.data3,
-            g.data4[0],
-            g.data4[1],
-            g.data4[2],
-            g.data4[3],
-            g.data4[4],
-            g.data4[5],
-            g.data4[6],
-            g.data4[7],
-        )
+    /// The `0x…` HRESULT a `win` error message carries, if any — the elevated
+    /// helper reports it as its exit code.
+    pub fn hresult_in(message: &str) -> Option<i32> {
+        let hex = message.split("0x").nth(1)?.get(..8)?;
+        u32::from_str_radix(hex, 16).ok().map(|code| code as i32)
     }
 
     /// Connect an `ITaskService` and return the root `\` task folder. Shared
@@ -487,9 +531,10 @@ mod win {
         }
     }
 
-    pub fn register_task_elevated(name: &str, xml: &str) -> Result<(), String> {
+    /// Registers the task. The caller must be elevated (see `enable`).
+    pub fn register_task(name: &str, xml: &str) -> Result<(), String> {
         let _guard = ComGuard::init()?;
-        let service = create_elevated_service()?;
+        let service = create_local_service().map_err(|e| format!("create service: 0x{:08X}", e.code().0))?;
         let root = connect_root_folder(&service)?;
         unsafe {
             root.RegisterTask(
@@ -501,20 +546,21 @@ mod win {
                 TASK_LOGON_INTERACTIVE_TOKEN,
                 &VARIANT::default(),
             )
-            .map_err(|e| format!("RegisterTask: {e}"))?;
+            .map_err(|e| format!("RegisterTask: 0x{:08X} {e}", e.code().0))?;
         }
         Ok(())
     }
 
-    pub fn delete_task_elevated(name: &str) -> Result<(), String> {
+    /// Deletes the task. The caller must be elevated (see `disable`).
+    pub fn delete_task(name: &str) -> Result<(), String> {
         let _guard = ComGuard::init()?;
-        let service = create_elevated_service()?;
+        let service = create_local_service().map_err(|e| format!("create service: 0x{:08X}", e.code().0))?;
         let root = connect_root_folder(&service)?;
         unsafe {
             match root.DeleteTask(&BSTR::from(name), 0) {
                 Ok(()) => Ok(()),
                 Err(e) if e.code().0 as u32 == HR_FILE_NOT_FOUND => Ok(()),
-                Err(e) => Err(format!("DeleteTask: {e}")),
+                Err(e) => Err(format!("DeleteTask: 0x{:08X} {e}", e.code().0)),
             }
         }
     }
@@ -541,6 +587,27 @@ mod win {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Elements newer than the declared schema 1.2 make Task Scheduler reject
+    /// the task (0x80041316) — these are the ones a copy-pasted task tends to carry.
+    #[test]
+    fn task_xml_stays_within_schema_1_2() {
+        let xml = task_definition_xml(r"C:\Sidearm\Sidearm.exe", &[("Sidearm.exe".into(), "AB".into())]);
+        assert!(xml.contains(r#"<Task version="1.2""#));
+        for newer in ["UseUnifiedSchedulingEngine", "DisallowStartOnRemoteAppSession", "Volatile"] {
+            assert!(!xml.contains(newer), "{newer} is not part of task schema 1.2");
+        }
+    }
+
+    /// The elevated helper reports a failure as its exit code: the HRESULT in
+    /// the error message, or none (→ the generic failure code).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn helper_exit_code_carries_the_hresult() {
+        assert_eq!(win::hresult_in("RegisterTask: 0x80070005 Access is denied"), Some(0x8007_0005_u32 as i32));
+        assert_eq!(win::hresult_in("create service: 0x80080017"), Some(0x8008_0017_u32 as i32));
+        assert_eq!(win::hresult_in("Путь к Sidearm содержит символ `%`"), None);
+    }
 
     #[test]
     fn extracts_command_from_simple_xml() {
