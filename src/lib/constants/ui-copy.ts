@@ -21,6 +21,7 @@ export const controlFamilyOrder: ControlFamily[] = ["thumbGrid", "topPanel", "sy
  *  consumers via `t(\`workspace.${value}.*\`)`, so only `value` lives here. */
 export const workspaceModeCopy: Array<{ value: WorkspaceMode }> = [
   { value: "profiles" },
+  { value: "mouse" },
   { value: "debug" },
   { value: "settings" },
 ];

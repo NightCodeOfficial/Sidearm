@@ -9,10 +9,9 @@ import { ProfileSettings } from "./ProfileSettings";
 import { SnippetLibrarySettings } from "./SnippetLibrarySettings";
 import { BackupSettings } from "./BackupSettings";
 import { AdvancedSettings } from "./AdvancedSettings";
-import { MouseSettings } from "./MouseSettings";
 import type { SettingsDeepLink } from "../SettingsWorkspace";
 
-type SettingsTab = "app" | "mouse" | "notifications" | "profiles" | "snippets" | "backup" | "advanced";
+type SettingsTab = "app" | "notifications" | "profiles" | "snippets" | "backup" | "advanced";
 
 const TABS: ReadonlyArray<{ id: SettingsTab; labelKey: string; icon: ReactNode }> = [
   {
@@ -22,16 +21,6 @@ const TABS: ReadonlyArray<{ id: SettingsTab; labelKey: string; icon: ReactNode }
       <svg className="nav-item__icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <circle cx="8" cy="8" r="2.4" stroke="currentColor" strokeWidth="1.4" />
         <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      </svg>
-    ),
-  },
-  {
-    id: "mouse",
-    labelKey: "settings.tabMouse",
-    icon: (
-      <svg className="nav-item__icon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <rect x="4" y="1.5" width="8" height="13" rx="4" stroke="currentColor" strokeWidth="1.4" />
-        <path d="M8 1.5v4.5M4 6h8" stroke="currentColor" strokeWidth="1.3" />
       </svg>
     ),
   },
@@ -94,7 +83,6 @@ export interface SettingsShellProps {
   activeConfig: AppConfig;
   activeProfile: Profile | null;
   effectiveProfileId: string | null;
-  runtimeProfileId: string | null;
   updateDraft: (updater: (config: AppConfig) => AppConfig) => void;
   updateSettings: (patch: Partial<Settings>) => void;
   setSelectedProfileId: (id: string | null) => void;
@@ -112,7 +100,6 @@ export function SettingsShell({
   activeConfig,
   activeProfile,
   effectiveProfileId,
-  runtimeProfileId,
   updateDraft,
   updateSettings,
   setSelectedProfileId,
@@ -125,8 +112,6 @@ export function SettingsShell({
 }: SettingsShellProps) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<SettingsTab>("app");
-  // The Mouse tab talks to the built-in Naga's vendor interface.
-  const hasBuiltinDevice = activeConfig.devices.some((device) => device.builtin);
 
   useEffect(() => {
     if (deepLink?.tab) setTab(deepLink.tab);
@@ -135,7 +120,7 @@ export function SettingsShell({
   return (
     <div className="settings-shell">
       <nav className="settings-shell__rail" aria-label={t("workspace.settings.label")}>
-        {TABS.filter((entry) => entry.id !== "mouse" || hasBuiltinDevice).map((entry) => (
+        {TABS.map((entry) => (
           <button
             key={entry.id}
             type="button"
@@ -156,16 +141,6 @@ export function SettingsShell({
             updateDraft={updateDraft}
             updateSettings={updateSettings}
             setError={setError}
-          />
-        ) : null}
-
-        {tab === "mouse" && hasBuiltinDevice ? (
-          <MouseSettings
-            activeConfig={activeConfig}
-            activeProfile={activeProfile}
-            runtimeProfileId={runtimeProfileId}
-            updateDraft={updateDraft}
-            updateSettings={updateSettings}
           />
         ) : null}
 

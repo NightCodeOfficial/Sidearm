@@ -76,6 +76,12 @@
       "body": "Buttons and rules of the selected profile.",
       "meta": "Button assignments"
     },
+    "mouse": {
+      "label": "Mouse",
+      "heading": "Mouse",
+      "body": "Mouse DPI, polling rate and battery.",
+      "meta": "Mouse settings"
+    },
     "debug": {
       "label": "Diagnostics",
       "heading": "Diagnostics",
@@ -597,8 +603,7 @@
     "tabProfiles": "Manage profiles",
     "tabSnippets": "Library",
     "tabBackup": "Backups",
-    "tabAdvanced": "Advanced",
-    "tabMouse": "Mouse"
+    "tabAdvanced": "Advanced"
   },
   "conflict": {
     "banner_one": "{{count}} shortcut conflict on this layer",
@@ -1270,6 +1275,9 @@
     }
   },
   "mouse": {
+    "profilePicker": "Profile",
+    "profilePickerHelp": "Pick a profile to set the mouse up for it. “● now” marks the profile Sidearm applies right now.",
+    "profileActiveNow": "{{name}} ● now",
     "batteryHeader": "Mouse battery",
     "batteryInTray": "On the tray icon",
     "batteryHelp": "Below 10% Sidearm warns you — at most once a day.",

@@ -1,53 +1,56 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { AppConfig, Profile, Settings } from "../../lib/config";
-import { upsertProfile } from "../../lib/config-editing";
+import type { AppConfig, Profile } from "../lib/config";
+import { upsertProfile } from "../lib/config-editing";
 import {
   getMouseSettings,
   listenMouseBattery,
   normalizeCommandError,
   setMouseDpi,
   setMousePollRate,
-} from "../../lib/backend";
+} from "../lib/backend";
 import {
   MOUSE_DPI_MAX,
   MOUSE_DPI_MIN,
   MOUSE_POLL_RATES,
   type MouseSettings as MouseSettingsState,
-} from "../../lib/onboard-mapping";
-import { PillTrack } from "../PillTrack";
-import { Notice, Toggle } from "../shared";
+} from "../lib/onboard-mapping";
+import { PillTrack } from "./PillTrack";
+import { Notice, Toggle } from "./shared";
 
-export interface MouseSettingsProps {
+export interface MouseWorkspaceProps {
   activeConfig: AppConfig;
-  /** The profile being edited (selected in the sidebar). */
+  /** Profiles in the sidebar's order. */
+  profiles: Profile[];
+  /** The profile being edited — the same selection as the sidebar. */
   activeProfile: Profile | null;
   /** The profile the runtime applies now: its edits reach the mouse at once. */
   runtimeProfileId: string | null;
+  setSelectedProfileId: (id: string | null) => void;
   updateDraft: (updater: (config: AppConfig) => AppConfig) => void;
-  updateSettings: (patch: Partial<Settings>) => void;
 }
 
-/** Mouse tab: battery (plus the tray badge switch) and the edited profile's own
- *  DPI / poll rate. The runtime applies a profile's values on every switch to
- *  it; the mouse stays as it is for a profile without them. */
-export function MouseSettings({
+/** The "Mouse" workspace: a profile switcher on top, the selected profile's own
+ *  DPI / poll rate (written into the mouse on every switch to that profile), and
+ *  the battery with the tray-badge switch. */
+export function MouseWorkspace({
   activeConfig,
+  profiles,
   activeProfile,
   runtimeProfileId,
+  setSelectedProfileId,
   updateDraft,
-  updateSettings,
-}: MouseSettingsProps) {
+}: MouseWorkspaceProps) {
   const { t } = useTranslation();
   const [device, setDevice] = useState<MouseSettingsState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dpiDraft, setDpiDraft] = useState("");
 
-  async function readDevice() {
+  async function run(request: () => Promise<MouseSettingsState>) {
     setBusy(true);
     try {
-      setDevice(await getMouseSettings());
+      setDevice(await request());
       setError(null);
     } catch (unknownError) {
       setError(normalizeCommandError(unknownError).message);
@@ -57,7 +60,7 @@ export function MouseSettings({
   }
 
   useEffect(() => {
-    void readDevice();
+    void run(getMouseSettings);
     let unlisten: (() => void) | undefined;
     void listenMouseBattery(({ percent }) => {
       setDevice((current) => (current ? { ...current, batteryPercent: percent } : current));
@@ -82,17 +85,8 @@ export function MouseSettings({
   }
 
   /** Writes a value to the mouse when the edited profile is the one in effect. */
-  async function applyNow(request: () => Promise<MouseSettingsState>) {
-    if (!appliesNow) return;
-    setBusy(true);
-    try {
-      setDevice(await request());
-      setError(null);
-    } catch (unknownError) {
-      setError(normalizeCommandError(unknownError).message);
-    } finally {
-      setBusy(false);
-    }
+  function applyNow(request: () => Promise<MouseSettingsState>) {
+    if (appliesNow) void run(request);
   }
 
   const dpiValue = Number(dpiDraft);
@@ -100,39 +94,23 @@ export function MouseSettings({
     Number.isInteger(dpiValue) && dpiValue >= MOUSE_DPI_MIN && dpiValue <= MOUSE_DPI_MAX;
 
   return (
-    <>
+    <div className="settings-shell__content">
       <section className="settings-section">
         <div className="settings-section__header">
-          <span className="settings-section__title">{t("mouse.batteryHeader")}</span>
-          <div className="settings-section__master">
-            <span className="settings-section__master-label">{t("mouse.batteryInTray")}</span>
-            <Toggle
-              checked={activeConfig.settings.showBatteryInTray ?? false}
-              onChange={(checked) => updateSettings({ showBatteryInTray: checked || undefined })}
-              ariaLabel={t("mouse.batteryInTray")}
-            />
-          </div>
+          <span className="settings-section__title">{t("mouse.profilePicker")}</span>
         </div>
-        <p className="panel__muted help-sm">{t("mouse.batteryHelp")}</p>
-        {device ? (
-          <p className="mt-8">
-            <strong>{t("mouse.batteryValue", { percent: device.batteryPercent })}</strong>
-          </p>
-        ) : null}
-        {error ? (
-          <Notice variant="warning" className="mt-12">
-            <p>{t("mouse.unavailable")}</p>
-            <p className="panel__muted help-caption">{error}</p>
-            <button
-              type="button"
-              className="action-button action-button--secondary action-button--small mt-8"
-              onClick={() => void readDevice()}
-              disabled={busy}
-            >
-              {t("mouse.retry")}
-            </button>
-          </Notice>
-        ) : null}
+        <PillTrack
+          items={profiles.map((profile) => ({
+            key: profile.id,
+            label:
+              profile.id === runtimeProfileId
+                ? t("mouse.profileActiveNow", { name: profile.name })
+                : profile.name,
+          }))}
+          active={activeProfile?.id ?? ""}
+          onSelect={(id) => setSelectedProfileId(id)}
+        />
+        <p className="panel__muted help-caption mt-8">{t("mouse.profilePickerHelp")}</p>
       </section>
 
       {activeProfile ? (
@@ -174,7 +152,7 @@ export function MouseSettings({
                   onSelect={(key) => {
                     const hz = Number(key);
                     saveProfile({ mouseDpi: profileDpi, mousePollRateHz: hz });
-                    void applyNow(() => setMousePollRate(hz));
+                    applyNow(() => setMousePollRate(hz));
                   }}
                 />
               </div>
@@ -202,7 +180,7 @@ export function MouseSettings({
                   className="action-button action-button--secondary action-button--small mt-8"
                   onClick={() => {
                     saveProfile({ mouseDpi: dpiValue, mousePollRateHz: profilePoll });
-                    void applyNow(() => setMouseDpi(dpiValue));
+                    applyNow(() => setMouseDpi(dpiValue));
                   }}
                   disabled={busy || !dpiValid || dpiValue === profileDpi}
                 >
@@ -213,6 +191,45 @@ export function MouseSettings({
           ) : null}
         </section>
       ) : null}
-    </>
+
+      <section className="settings-section">
+        <div className="settings-section__header">
+          <span className="settings-section__title">{t("mouse.batteryHeader")}</span>
+          <div className="settings-section__master">
+            <span className="settings-section__master-label">{t("mouse.batteryInTray")}</span>
+            <Toggle
+              checked={activeConfig.settings.showBatteryInTray ?? false}
+              onChange={(checked) =>
+                updateDraft((config) => ({
+                  ...config,
+                  settings: { ...config.settings, showBatteryInTray: checked || undefined },
+                }))
+              }
+              ariaLabel={t("mouse.batteryInTray")}
+            />
+          </div>
+        </div>
+        <p className="panel__muted help-sm">{t("mouse.batteryHelp")}</p>
+        {device ? (
+          <p className="mt-8">
+            <strong>{t("mouse.batteryValue", { percent: device.batteryPercent })}</strong>
+          </p>
+        ) : null}
+        {error ? (
+          <Notice variant="warning" className="mt-12">
+            <p>{t("mouse.unavailable")}</p>
+            <p className="panel__muted help-caption">{error}</p>
+            <button
+              type="button"
+              className="action-button action-button--secondary action-button--small mt-8"
+              onClick={() => void run(getMouseSettings)}
+              disabled={busy}
+            >
+              {t("mouse.retry")}
+            </button>
+          </Notice>
+        ) : null}
+      </section>
+    </div>
   );
 }

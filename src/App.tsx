@@ -28,6 +28,7 @@ import { OnboardingWizard } from "./components/onboarding/OnboardingWizard";
 import { SynapseImportModal } from "./components/SynapseImportModal";
 import { Toast, type ToastState } from "./components/Toast";
 import { ProfilesWorkspace } from "./components/ProfilesWorkspace";
+import { MouseWorkspace } from "./components/MouseWorkspace";
 import { SettingsWorkspace, type SettingsDeepLink } from "./components/SettingsWorkspace";
 import { ErrorPanel } from "./components/shared";
 import { Sidebar } from "./components/Sidebar";
@@ -1045,12 +1046,20 @@ function App() {
                 heatmapEnabledRef={heatmapEnabledRef}
                 showToast={showToast}
               />
+            ) : workspaceMode === "mouse" ? (
+              <MouseWorkspace
+                activeConfig={activeConfig}
+                profiles={profiles}
+                activeProfile={activeProfile}
+                runtimeProfileId={runtimeProfileId}
+                setSelectedProfileId={setSelectedProfileId}
+                updateDraft={updateDraft}
+              />
             ) : workspaceMode === "settings" ? (
               <SettingsWorkspace
                 activeConfig={activeConfig}
                 activeProfile={activeProfile}
                 effectiveProfileId={effectiveProfileId}
-                runtimeProfileId={runtimeProfileId}
                 updateDraft={updateDraft}
                 setSelectedProfileId={setSelectedProfileId}
                 setConfirmModal={setConfirmModal}
