@@ -14,6 +14,8 @@ export interface SettingsWorkspaceProps {
   activeConfig: AppConfig;
   activeProfile: Profile | null;
   effectiveProfileId: string | null;
+  /** Profile the runtime applies right now (mouse settings take effect at once). */
+  runtimeProfileId: string | null;
   updateDraft: (updater: (config: AppConfig) => AppConfig) => void;
   setSelectedProfileId: (id: string | null) => void;
   setConfirmModal: (modal: ConfirmModalRequest | null) => void;
@@ -33,6 +35,7 @@ export function SettingsWorkspace({
   activeConfig,
   activeProfile,
   effectiveProfileId,
+  runtimeProfileId,
   updateDraft,
   setSelectedProfileId,
   setConfirmModal,
@@ -57,6 +60,7 @@ export function SettingsWorkspace({
       activeConfig={activeConfig}
       activeProfile={activeProfile}
       effectiveProfileId={effectiveProfileId}
+      runtimeProfileId={runtimeProfileId}
       updateDraft={updateDraft}
       updateSettings={updateSettings}
       setSelectedProfileId={setSelectedProfileId}

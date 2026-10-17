@@ -42,6 +42,7 @@ import {
   listenDragDrop,
   listenElevatedForeground,
   listenMouseDefaultsSuspected,
+  listenMouseBattery,
   listenOnboardTakeover,
   listenSingleInstanceBlocked,
   listenTrayProfileChanged,
@@ -253,6 +254,18 @@ function App() {
             .catch((e: unknown) => showToast(normalizeCommandError(e).message, "warning"));
         },
       });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, [showToast, t]);
+
+  // Low mouse battery: the guard flags one reading per discharge (it also shows
+  // the OSD bubble and updates the tray tooltip, which work with the window hidden).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenMouseBattery(({ percent, low }) => {
+      if (low) showToast(t("mouse.batteryLow", { percent }), "warning");
     }).then((fn) => {
       unlisten = fn;
     });
@@ -1037,6 +1050,7 @@ function App() {
                 activeConfig={activeConfig}
                 activeProfile={activeProfile}
                 effectiveProfileId={effectiveProfileId}
+                runtimeProfileId={runtimeProfileId}
                 updateDraft={updateDraft}
                 setSelectedProfileId={setSelectedProfileId}
                 setConfirmModal={setConfirmModal}

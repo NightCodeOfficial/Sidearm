@@ -807,6 +807,14 @@ pub(crate) fn emit_profile_resolved_and_notify(
                 .as_deref()
                 .unwrap_or("Default");
             crate::show_osd(app, profile_name, &config.settings);
+            #[cfg(target_os = "windows")]
+            if let Some(profile) = capture_result
+                .resolved_profile_id
+                .as_deref()
+                .and_then(|id| config.profiles.iter().find(|p| p.id == id))
+            {
+                crate::onboard_guard::apply_profile_mouse_settings(profile);
+            }
         }
     }
 }

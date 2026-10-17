@@ -79,6 +79,8 @@ export interface Settings {
   repairClipboardOnCopy?: boolean;
   /** Defaults to `mouse_right` when absent. */
   hypershiftTrigger?: HypershiftTrigger;
+  /** Draw the mouse battery level as a badge on the tray icon. */
+  showBatteryInTray?: boolean;
 }
 
 export interface Profile {
@@ -87,6 +89,10 @@ export interface Profile {
   description?: string;
   enabled: boolean;
   priority: number;
+  /** DPI applied to the built-in mouse with this profile; absent = unchanged. */
+  mouseDpi?: number;
+  /** Poll rate (125/500/1000 Hz) applied with this profile; absent = unchanged. */
+  mousePollRateHz?: number;
 }
 
 /** A physical input device; its controls live in `physicalControls` tagged

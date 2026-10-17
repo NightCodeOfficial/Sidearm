@@ -54,6 +54,25 @@ export function isBuiltinControl(config: AppConfig, controlId: ControlId | strin
   return config.devices.some((device) => device.id === control.deviceId && device.builtin === true);
 }
 
+/** Live mouse settings; the mouse stores them, so they are not in the config. */
+export interface MouseSettings {
+  batteryPercent: number;
+  dpi: number;
+  pollRateHz: number;
+}
+
+/** Battery reading from the guard (`mouse_battery`). */
+export interface MouseBatteryEvent {
+  percent: number;
+  low: boolean;
+}
+
+/** DPI range the mouse accepts (mirrors Rust `DPI_MIN`/`DPI_MAX`). */
+export const MOUSE_DPI_MIN = 100;
+export const MOUSE_DPI_MAX = 30000;
+/** Poll rates the mouse supports, in Hz. */
+export const MOUSE_POLL_RATES = [125, 500, 1000] as const;
+
 /**
  * What the backend's takeover guard had to take back from Razer's engine: the
  * device mode that made the firmware ignore onboard memory, or the onboard slots

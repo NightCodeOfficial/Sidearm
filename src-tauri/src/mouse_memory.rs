@@ -116,6 +116,40 @@ const CMD_SET_BUTTON: u8 = 0x0c;
 /// Category byte of a button record that acts as a plain mouse button; its
 /// value is the button number (`1` left, `2` right, `3` middle).
 const CATEGORY_MOUSE: u8 = 0x01;
+/// Sensor class: DPI get/set (OpenRazer naming, confirmed on this device).
+const CLASS_DPI: u8 = 0x04;
+const CMD_SET_DPI: u8 = 0x05;
+const CMD_GET_DPI: u8 = 0x85;
+/// Power class: battery level as 0..=255 in reply byte 9.
+const CLASS_POWER: u8 = 0x07;
+const CMD_GET_BATTERY: u8 = 0x80;
+/// Poll rate get/set live in the control class next to the device mode.
+const CMD_SET_POLL_RATE: u8 = 0x05;
+const CMD_GET_POLL_RATE: u8 = 0x85;
+/// Storage selector of DPI writes: `0x01` keeps the value in the mouse across
+/// power cycles (the device answered its stored DPI with it).
+const VARSTORE: u8 = 0x01;
+/// DPI range the UI offers (the Naga V2 HyperSpeed sensor tops out at 30 000).
+pub const DPI_MIN: u16 = 100;
+pub const DPI_MAX: u16 = 30_000;
+/// Poll rate (Hz) ↔ wire code; measured: `0x02` read back as the 500 Hz the
+/// mouse ran at, a `0x01` write read back as 1000 Hz.
+const POLL_RATES: [(u16, u8); 3] = [(1000, 0x01), (500, 0x02), (125, 0x08)];
+
+/// Wire code of a poll rate the mouse supports.
+pub fn poll_code_for_hz(hz: u16) -> Option<u8> {
+    POLL_RATES.iter().find(|(rate, _)| *rate == hz).map(|(_, code)| *code)
+}
+
+/// Poll rate (Hz) of a wire code.
+pub fn hz_for_poll_code(code: u8) -> Option<u16> {
+    POLL_RATES.iter().find(|(_, c)| *c == code).map(|(rate, _)| *rate)
+}
+
+/// Battery level 0..=255 as a rounded percentage.
+pub fn battery_percent_from_raw(raw: u8) -> u8 {
+    ((u16::from(raw) * 100 + 127) / 255) as u8
+}
 /// `GET_BUTTON` arguments: profile, button, layer, then padding.
 const GET_BUTTON_ARGS: [u8; 10] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 const COMMAND_STATUS_OK: u8 = 0x02;
@@ -251,6 +285,16 @@ pub struct OnboardMapping {
 pub struct OnboardReport {
     pub confirmed: Vec<OnboardMapping>,
     pub failed: Vec<String>,
+}
+
+/// Live device settings. The mouse stores them itself, so they are not part of
+/// the config.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MouseSettings {
+    pub battery_percent: u8,
+    pub dpi: u16,
+    pub poll_rate_hz: u16,
 }
 
 /// One button record as the device holds it, read back with the per-button query
@@ -437,6 +481,58 @@ impl VendorDevice {
             modifier: record[5],
             usage: record[6],
         })
+    }
+
+    /// The settings the Mouse tab shows, read live from the device.
+    pub fn settings(&self) -> Result<MouseSettings, String> {
+        Ok(MouseSettings {
+            battery_percent: self.battery_percent()?,
+            dpi: self.dpi()?,
+            poll_rate_hz: self.poll_rate_hz()?,
+        })
+    }
+
+    /// Battery charge in percent.
+    pub fn battery_percent(&self) -> Result<u8, String> {
+        let reply = self.command(CLASS_POWER, CMD_GET_BATTERY, &[0x00, 0x00])?;
+        Ok(battery_percent_from_raw(reply[9]))
+    }
+
+    /// Current DPI (X; this app always writes X = Y).
+    pub fn dpi(&self) -> Result<u16, String> {
+        let mut args = [0u8; 7];
+        args[0] = VARSTORE;
+        let reply = self.command(CLASS_DPI, CMD_GET_DPI, &args)?;
+        Ok(u16::from_be_bytes([reply[9], reply[10]]))
+    }
+
+    /// Stores `dpi` for both axes in the mouse and requires it to read back.
+    pub fn set_dpi(&self, dpi: u16) -> Result<(), String> {
+        if !(DPI_MIN..=DPI_MAX).contains(&dpi) {
+            return Err(format!("DPI {dpi} is outside {DPI_MIN}..={DPI_MAX}"));
+        }
+        let [hi, lo] = dpi.to_be_bytes();
+        self.command(CLASS_DPI, CMD_SET_DPI, &[VARSTORE, hi, lo, hi, lo, 0x00, 0x00])?;
+        match self.dpi()? {
+            read if read == dpi => Ok(()),
+            read => Err(format!("mouse kept DPI {read} after a write of {dpi}")),
+        }
+    }
+
+    /// Current poll rate in Hz.
+    pub fn poll_rate_hz(&self) -> Result<u16, String> {
+        let reply = self.command(CLASS_CONTROL, CMD_GET_POLL_RATE, &[0x00])?;
+        hz_for_poll_code(reply[8]).ok_or_else(|| format!("unknown poll rate code {:#04x}", reply[8]))
+    }
+
+    /// Sets the poll rate and requires it to read back.
+    pub fn set_poll_rate_hz(&self, hz: u16) -> Result<(), String> {
+        let code = poll_code_for_hz(hz).ok_or_else(|| format!("unsupported poll rate {hz} Hz"))?;
+        self.command(CLASS_CONTROL, CMD_SET_POLL_RATE, &[code])?;
+        match self.poll_rate_hz()? {
+            read if read == hz => Ok(()),
+            read => Err(format!("mouse kept {read} Hz after a write of {hz} Hz")),
+        }
     }
 
     /// Puts every listed native control back to its plain mouse button; `Err`
@@ -832,6 +928,19 @@ mod tests {
         assert!(!left.is_mouse_button(2), "a left click on the right button is drift too");
         assert!(native_buttons().contains(&("mouse_right", 0x02, 2)));
         assert!(native_buttons().contains(&("mouse_4", 0x34, 4)));
+    }
+
+    /// Values the hardware answered with (2026-10-17): battery `0xa9`, poll
+    /// code `0x02` at 500 Hz, a `0x01` write read back as 1000 Hz.
+    #[test]
+    fn settings_conversions_match_the_hardware() {
+        assert_eq!(battery_percent_from_raw(0xa9), 66);
+        assert_eq!(battery_percent_from_raw(0), 0);
+        assert_eq!(battery_percent_from_raw(255), 100);
+        assert_eq!(hz_for_poll_code(0x02), Some(500));
+        assert_eq!(poll_code_for_hz(1000), Some(0x01));
+        assert_eq!(poll_code_for_hz(125), Some(0x08));
+        assert_eq!(poll_code_for_hz(250), None);
     }
 
     #[test]

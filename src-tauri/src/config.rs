@@ -268,6 +268,9 @@ pub struct Settings {
     /// `"none"`. The trigger button itself never reaches the applications.
     #[serde(default = "default_hypershift_trigger")]
     pub hypershift_trigger: String,
+    /// Draw the mouse battery level as a badge on the tray icon.
+    #[serde(default)]
+    pub show_battery_in_tray: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -279,6 +282,13 @@ pub struct Profile {
     pub description: Option<String>,
     pub enabled: bool,
     pub priority: i32,
+    /// DPI the built-in mouse switches to when this profile becomes active;
+    /// absent = leave the mouse as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse_dpi: Option<u16>,
+    /// Poll rate (125/500/1000 Hz) applied with the profile; absent = unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse_poll_rate_hz: Option<u16>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -1939,6 +1949,7 @@ pub(crate) fn default_seed_config() -> AppConfig {
             onboarding_completed: false,
             onboarding_step: None,
             hypershift_trigger: default_hypershift_trigger(),
+            show_battery_in_tray: false,
         },
         profiles: seed_profiles(),
         devices: vec![builtin_naga_device()],
@@ -3131,6 +3142,7 @@ fn profile(id: &str, name: &str, priority: i32, description: Option<&str>) -> Pr
         description: description.map(str::to_owned),
         enabled: true,
         priority,
+        mouse_dpi: None, mouse_poll_rate_hz: None,
     }
 }
 
@@ -3887,6 +3899,7 @@ mod edge_proptests {
             description: None,
             enabled: true,
             priority: 0,
+            mouse_dpi: None, mouse_poll_rate_hz: None,
         }];
         cfg.settings.fallback_profile_id = "p1".into();
         cfg.app_mappings = vec![];
@@ -4044,6 +4057,7 @@ mod edge_proptests {
             description: Some("desc".into()),
             enabled: false,
             priority: i32::MAX,
+            mouse_dpi: None, mouse_poll_rate_hz: None,
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: Profile = serde_json::from_str(&json).unwrap();
@@ -4157,6 +4171,7 @@ mod edge_proptests {
                 description: None,
                 enabled: true,
                 priority,
+                mouse_dpi: None, mouse_poll_rate_hz: None,
             };
             let json = serde_json::to_string(&p).unwrap();
             let back: Profile = serde_json::from_str(&json).unwrap();
@@ -4287,6 +4302,7 @@ mod edge_proptests {
                     description: None,
                     enabled: true,
                     priority: i as i32,
+                    mouse_dpi: None, mouse_poll_rate_hz: None,
                 })
                 .collect();
             cfg.settings.fallback_profile_id = "p0".into();

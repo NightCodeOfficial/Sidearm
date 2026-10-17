@@ -18,6 +18,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,33 @@ pub const EVENT_ONBOARD_TAKEOVER: &str = "onboard_takeover";
 
 /// Wakes the guard for an immediate check.
 static CHECK_NOW: OnceLock<Sender<()>> = OnceLock::new();
+
+/// Emitted when the battery level changes: `{ percent, low }`.
+pub const EVENT_MOUSE_BATTERY: &str = "mouse_battery";
+/// Below this the user is warned…
+const LOW_BATTERY_PERCENT: u8 = 10;
+/// …at most once per this period, across restarts.
+const LOW_BATTERY_WARN_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// File next to the config holding the unix time of the last low warning.
+const LOW_BATTERY_STAMP_FILE: &str = "mouse-battery-warned";
+/// Last battery level read by the guard; `u8::MAX` = not read yet.
+static LAST_BATTERY: AtomicU8 = AtomicU8::new(u8::MAX);
+
+/// Battery level from the guard's last successful read.
+pub fn last_battery_percent() -> Option<u8> {
+    match LAST_BATTERY.load(Ordering::Relaxed) {
+        u8::MAX => None,
+        percent => Some(percent),
+    }
+}
+
+/// Payload of [`EVENT_MOUSE_BATTERY`].
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct BatteryEvent {
+    pub percent: u8,
+    /// `true` on the reading that warns (low, and none in the last 24 h).
+    pub low: bool,
+}
 
 /// What had to be taken back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -92,6 +120,44 @@ pub fn spawn(app: AppHandle, runtime_store: Arc<Mutex<RuntimeStore>>, config_dir
     std::thread::Builder::new()
         .name("onboard-guard".into())
         .spawn(move || run(&app, &runtime_store, &config_dir, &receiver))
+        .ok();
+}
+
+/// Applies a profile's own DPI / poll rate to the mouse (fields left unset keep
+/// the mouse as it is). Runs on its own thread: it is called from the capture
+/// path on a profile switch and must not delay the key that caused it. The
+/// device lock serializes it with the guard tick.
+pub fn apply_profile_mouse_settings(profile: &crate::config::Profile) {
+    let (dpi, poll_rate_hz) = (profile.mouse_dpi, profile.mouse_poll_rate_hz);
+    if dpi.is_none() && poll_rate_hz.is_none() {
+        return;
+    }
+    let name = profile.name.clone();
+    std::thread::Builder::new()
+        .name("profile-mouse".into())
+        .spawn(move || {
+            let result = VendorDevice::open(VID, PID).and_then(|device| {
+                if let Some(hz) = poll_rate_hz
+                    && device.poll_rate_hz()? != hz
+                {
+                    device.set_poll_rate_hz(hz)?;
+                }
+                if let Some(dpi) = dpi
+                    && device.dpi()? != dpi
+                {
+                    device.set_dpi(dpi)?;
+                }
+                Ok(())
+            });
+            match result {
+                Ok(()) => log::info!(
+                    "[onboard-guard] profile `{name}`: mouse DPI {dpi:?}, poll {poll_rate_hz:?} Hz applied"
+                ),
+                Err(message) => {
+                    log::warn!("[onboard-guard] profile `{name}`: mouse settings not applied: {message}")
+                }
+            }
+        })
         .ok();
 }
 
@@ -170,7 +236,12 @@ fn run(
         }
         razer_was_running = razer_running;
 
-        let verdict = check_once(app, runtime_store, config_dir, &mut last_notified);
+        let verdict = check_once(
+            app,
+            runtime_store,
+            config_dir,
+            &mut last_notified,
+        );
         match verdict {
             Verdict::Clean(buttons) if last_clean != Some(buttons) => {
                 record_clean(runtime_store, buttons);
@@ -233,6 +304,10 @@ fn check_once(
     let Some(config) = read_config(config_dir) else {
         return Verdict::Unreadable;
     };
+    match device.battery_percent() {
+        Ok(percent) => report_battery(app, &config, config_dir, percent),
+        Err(message) => log::debug!("[onboard-guard] battery unreadable: {message}"),
+    }
     let bindings = crate::mouse_memory::onboard_bindings(&config);
     match drifted_controls(&device, &bindings) {
         Ok((drifted_keys, drifted_native)) => {
@@ -271,6 +346,48 @@ fn check_once(
             Verdict::Unreadable
         }
     }
+}
+
+/// Publishes a battery reading: remembers it, refreshes the tray (tooltip and
+/// badge) and the UI when it changed, and warns when it is low — at most once a
+/// day, remembered in [`LOW_BATTERY_STAMP_FILE`] so a restart does not repeat it.
+fn report_battery(app: &AppHandle, config: &crate::config::AppConfig, config_dir: &Path, percent: u8) {
+    let stamp_path = config_dir.join(LOW_BATTERY_STAMP_FILE);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last_warned = std::fs::read_to_string(&stamp_path)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok());
+    let low = should_warn_low(percent, last_warned, now);
+    let previous = LAST_BATTERY.swap(percent, Ordering::Relaxed);
+    if previous != percent || low {
+        crate::rebuild_tray_menu_from_config(app, config);
+        let _ = app.emit(EVENT_MOUSE_BATTERY, BatteryEvent { percent, low });
+    }
+    if low {
+        if let Err(error) = std::fs::write(&stamp_path, now.to_string()) {
+            log::warn!("[onboard-guard] battery warning stamp not saved: {error}");
+        }
+        let message = format!("Заряд мыши: {percent}%");
+        log::warn!("[onboard-guard] {message}");
+        // The OSD window is created lazily and its first call only creates it:
+        // give the WebView a moment so this warning is not the call that is lost.
+        if app.get_webview_window("osd").is_none() {
+            crate::show_osd(app, &message, &config.settings);
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        crate::show_osd(app, &message, &config.settings);
+    }
+}
+
+/// Whether a reading of `percent` should warn: below [`LOW_BATTERY_PERCENT`]
+/// and no warning in the last [`LOW_BATTERY_WARN_EVERY`] (`last_warned` and
+/// `now` are unix seconds).
+fn should_warn_low(percent: u8, last_warned: Option<u64>, now: u64) -> bool {
+    percent < LOW_BATTERY_PERCENT
+        && last_warned.is_none_or(|last| now.saturating_sub(last) >= LOW_BATTERY_WARN_EVERY.as_secs())
 }
 
 /// Key controls whose record drifted, and native buttons that stopped being
@@ -374,6 +491,17 @@ fn takeover_message(event: &TakeoverEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Below 10 %, at most once a day — a restart within the day does not repeat it.
+    #[test]
+    fn low_battery_warns_at_most_once_a_day() {
+        let day = 24 * 60 * 60;
+        assert!(!should_warn_low(10, None, 1_000), "10 % is not below 10 %");
+        assert!(should_warn_low(9, None, 1_000));
+        assert!(!should_warn_low(5, Some(1_000), 1_000 + day - 1));
+        assert!(should_warn_low(5, Some(1_000), 1_000 + day));
+        assert!(!should_warn_low(50, None, 1_000));
+    }
 
     /// Only an `F13`..`F24` carrying a modifier Sidearm never writes is foreign.
     #[test]

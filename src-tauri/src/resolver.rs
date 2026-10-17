@@ -695,6 +695,7 @@ mod tests {
                 onboarding_completed: false,
                 onboarding_step: None,
                 hypershift_trigger: "mouse_right".into(),
+                show_battery_in_tray: false,
             },
             profiles: vec![
                 profile("default", "Default", 0),
@@ -759,6 +760,7 @@ mod tests {
             description: None,
             enabled: true,
             priority,
+            mouse_dpi: None, mouse_poll_rate_hz: None,
         }
     }
 
@@ -1052,6 +1054,7 @@ mod edge_proptests {
                 onboarding_completed: false,
                 onboarding_step: None,
                 hypershift_trigger: "mouse_right".into(),
+                show_battery_in_tray: false,
             },
             profiles: vec![
                 minimal_profile("default", "Default", true),
@@ -1109,6 +1112,7 @@ mod edge_proptests {
             description: None,
             enabled,
             priority: 0,
+            mouse_dpi: None, mouse_poll_rate_hz: None,
         }
     }
 

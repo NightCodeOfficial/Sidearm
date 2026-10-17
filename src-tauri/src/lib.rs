@@ -14,6 +14,8 @@ mod log_cleanup;
 mod mouse_memory;
 #[cfg(target_os = "windows")]
 mod onboard_guard;
+#[cfg(target_os = "windows")]
+mod tray_badge;
 mod paths;
 mod platform;
 mod recorder;
@@ -433,6 +435,32 @@ fn build_tray_menu(
 /// Rebuild the tray menu from an in-hand config (no disk IO). Use this from the
 /// save/reload paths where the config is already loaded, to avoid a disk read on
 /// every autosave.
+/// Sets the tray icon to the app icon, with the battery badge when `badge` is
+/// set. Skips the call when the icon already shows this state.
+#[cfg(target_os = "windows")]
+fn update_tray_icon(app: &AppHandle, tray: &tauri::tray::TrayIcon, badge: Option<u8>) {
+    static SHOWN: Mutex<Option<Option<u8>>> = Mutex::new(None);
+    let mut shown = SHOWN.lock().recover_poison();
+    if *shown == Some(badge) {
+        return;
+    }
+    let Some(base) = app.default_window_icon() else {
+        return;
+    };
+    let icon = match badge {
+        Some(percent) => tauri::image::Image::new_owned(
+            tray_badge::compose(base.rgba(), base.width(), base.height(), percent),
+            tray_badge::SIZE,
+            tray_badge::SIZE,
+        ),
+        None => base.clone().to_owned(),
+    };
+    match tray.set_icon(Some(icon)) {
+        Ok(()) => *shown = Some(badge),
+        Err(error) => log::warn!("[tray] set_icon failed: {error}"),
+    }
+}
+
 fn rebuild_tray_menu_from_config(app: &AppHandle, config: &config::AppConfig) {
     let Some(tray) = app.tray_by_id("sidearm-tray") else {
         return;
@@ -463,12 +491,28 @@ fn rebuild_tray_menu_from_config(app: &AppHandle, config: &config::AppConfig) {
     } else {
         "приостановлен"
     };
+    #[cfg(target_os = "windows")]
+    let battery_line = onboard_guard::last_battery_percent()
+        .map(|percent| format!("\nМышь: {percent}%"))
+        .unwrap_or_default();
+    #[cfg(not(target_os = "windows"))]
+    let battery_line = String::new();
     if let Err(error) = tray.set_tooltip(Some(format!(
         "Sidearm — {state_label}
-Профиль: {active_name}"
+Профиль: {active_name}{battery_line}"
     ))) {
         log::warn!("[tray] set_tooltip failed: {error}");
     }
+    #[cfg(target_os = "windows")]
+    update_tray_icon(
+        app,
+        &tray,
+        config
+            .settings
+            .show_battery_in_tray
+            .then(onboard_guard::last_battery_percent)
+            .flatten(),
+    );
 
     match build_tray_menu(
         app,
@@ -2694,6 +2738,44 @@ async fn restore_onboard_control(app: AppHandle) -> Result<(), CommandError> {
     .map_err(|e| CommandError::internal(format!("restore_onboard_control task failed: {e}")))?
 }
 
+/// Opens the mouse, runs `work` on it, and returns its fresh settings.
+#[cfg(target_os = "windows")]
+async fn with_mouse_settings(
+    work: impl FnOnce(&mouse_memory::VendorDevice) -> Result<(), String> + Send + 'static,
+) -> Result<mouse_memory::MouseSettings, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let device = mouse_memory::VendorDevice::open(0x1532, 0x00B4)
+            .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))?;
+        work(&device).map_err(|msg| CommandError::new("mouse_setting_failed", msg, None))?;
+        device
+            .settings()
+            .map_err(|msg| CommandError::new("mouse_setting_failed", msg, None))
+    })
+    .await
+    .map_err(|e| CommandError::internal(format!("mouse settings task failed: {e}")))?
+}
+
+/// Battery, DPI and poll rate as the mouse reports them now.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn get_mouse_settings() -> Result<mouse_memory::MouseSettings, CommandError> {
+    with_mouse_settings(|_| Ok(())).await
+}
+
+/// Stores a DPI in the mouse (both axes) and returns the settings read back.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn set_mouse_dpi(dpi: u16) -> Result<mouse_memory::MouseSettings, CommandError> {
+    with_mouse_settings(move |device| device.set_dpi(dpi)).await
+}
+
+/// Sets the mouse poll rate (125/500/1000 Hz) and returns the settings read back.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn set_mouse_poll_rate(hz: u16) -> Result<mouse_memory::MouseSettings, CommandError> {
+    with_mouse_settings(move |device| device.set_poll_rate_hz(hz)).await
+}
+
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn get_exe_icon(
@@ -3511,7 +3593,10 @@ pub fn run() {
             stop_macro_recording,
             apply_onboard_mapping,
             verify_onboard_mapping,
-            restore_onboard_control
+            restore_onboard_control,
+            get_mouse_settings,
+            set_mouse_dpi,
+            set_mouse_poll_rate
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

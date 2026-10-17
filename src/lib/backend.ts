@@ -15,7 +15,13 @@ import type {
   SaveConfigResponse,
   SequenceStep,
 } from "./config";
-import type { OnboardBinding, OnboardReport, OnboardTakeoverEvent } from "./onboard-mapping";
+import type {
+  MouseBatteryEvent,
+  MouseSettings,
+  OnboardBinding,
+  OnboardReport,
+  OnboardTakeoverEvent,
+} from "./onboard-mapping";
 import type {
   ImportOptions as SynapseImportOptions,
   ImportedConfig as SynapseImportedConfig,
@@ -92,6 +98,21 @@ export async function verifyOnboardMapping(
  */
 export async function restoreOnboardControl(): Promise<void> {
   return invoke<void>("restore_onboard_control");
+}
+
+/** Battery, DPI and poll rate as the mouse reports them now. */
+export async function getMouseSettings(): Promise<MouseSettings> {
+  return invoke<MouseSettings>("get_mouse_settings");
+}
+
+/** Stores a DPI (both axes) in the mouse; resolves with the settings read back. */
+export async function setMouseDpi(dpi: number): Promise<MouseSettings> {
+  return invoke<MouseSettings>("set_mouse_dpi", { dpi });
+}
+
+/** Sets the poll rate (125/500/1000 Hz); resolves with the settings read back. */
+export async function setMousePollRate(hz: number): Promise<MouseSettings> {
+  return invoke<MouseSettings>("set_mouse_poll_rate", { hz });
 }
 
 export async function getAppPaths(): Promise<AppPathsInfo> {
@@ -404,6 +425,14 @@ export async function listenOnboardTakeover(
   onPayload: (payload: OnboardTakeoverEvent) => void,
 ): Promise<UnlistenFn> {
   return listenEvent("onboard_takeover", onPayload);
+}
+
+/** Fires when the guard read a new battery level; `low` marks the one reading
+ *  per discharge that crossed into the low range. */
+export async function listenMouseBattery(
+  onPayload: (payload: MouseBatteryEvent) => void,
+): Promise<UnlistenFn> {
+  return listenEvent("mouse_battery", onPayload);
 }
 
 /** Fires once per app when the foreground window runs elevated and Windows

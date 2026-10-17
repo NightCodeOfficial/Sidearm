@@ -8,7 +8,7 @@ All React components: mouse visualization, modals (action picker, app-mapping, c
 
 - `shared.tsx` — the canonical primitives: `ModalShell`, `ModalHeader`, `ModalFooter`, `Toggle`, `Notice`, `CloseButton`. Reuse these; do not fork new modal/toggle visuals.
 - `mouse-visual/` — legend cells + columns (`LegendCell` is the keyboard-accessible control button that spreads `useControlInteractions`).
-- `settings/` — settings panels + `SettingsShell`.
+- `settings/` — settings panels + `SettingsShell`. `MouseSettings` (the "Mouse" tab, shown only with the built-in Naga): battery + the `showBatteryInTray` switch, and the edited profile's own `mouseDpi`/`mousePollRateHz` (saved to the profile; also written to the mouse at once when that profile is the runtime one).
 - `icons.tsx`, workspace shells, and the modal components.
 - Delegated to child: `action-picker/` (the per-ActionType editors).
 

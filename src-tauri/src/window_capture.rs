@@ -313,6 +313,7 @@ mod tests {
                 onboarding_completed: false,
                 onboarding_step: None,
                 hypershift_trigger: "mouse_right".into(),
+                show_battery_in_tray: false,
             },
             profiles: vec![
                 profile("default", "Default", 0),
@@ -377,6 +378,7 @@ mod tests {
             description: None,
             enabled: true,
             priority,
+            mouse_dpi: None, mouse_poll_rate_hz: None,
         }
     }
 
@@ -465,6 +467,7 @@ mod edge_proptests {
                 onboarding_completed: false,
                 onboarding_step: None,
                 hypershift_trigger: "mouse_right".into(),
+                show_battery_in_tray: false,
             },
             profiles: vec![
                 Profile {
@@ -473,6 +476,7 @@ mod edge_proptests {
                     description: None,
                     enabled: true,
                     priority: 0,
+                    mouse_dpi: None, mouse_poll_rate_hz: None,
                 },
                 Profile {
                     id: "p1".into(),
@@ -480,6 +484,7 @@ mod edge_proptests {
                     description: None,
                     enabled: true,
                     priority: 100,
+                    mouse_dpi: None, mouse_poll_rate_hz: None,
                 },
             ],
             devices: vec![crate::config::builtin_naga_device()],

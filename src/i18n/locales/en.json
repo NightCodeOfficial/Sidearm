@@ -597,7 +597,8 @@
     "tabProfiles": "Manage profiles",
     "tabSnippets": "Library",
     "tabBackup": "Backups",
-    "tabAdvanced": "Advanced"
+    "tabAdvanced": "Advanced",
+    "tabMouse": "Mouse"
   },
   "conflict": {
     "banner_one": "{{count}} shortcut conflict on this layer",
@@ -1267,5 +1268,25 @@
       "waiting": "Waiting for the first action…",
       "fired": "Fired"
     }
+  },
+  "mouse": {
+    "batteryHeader": "Mouse battery",
+    "batteryInTray": "On the tray icon",
+    "batteryHelp": "Below 10% Sidearm warns you — at most once a day.",
+    "batteryValue": "{{percent}}%",
+    "batteryLow": "Mouse battery low: {{percent}}%",
+    "unavailable": "The mouse does not respond — it may be asleep. Move it and click Refresh.",
+    "retry": "Refresh",
+    "profileHeader": "Mouse in profile “{{name}}”",
+    "profileOverride": "Own settings",
+    "profileHelpOff": "Switching to this profile leaves the mouse as it is.",
+    "profileHelpOn": "Switching to this profile writes these values into the mouse.",
+    "pollRate": "Polling rate",
+    "pollRateCaption": "How often the mouse reports movement. Higher is smoother but drains the battery faster.",
+    "pollRateOption": "{{hz}} Hz",
+    "dpi": "Sensitivity",
+    "dpiUnit": "DPI",
+    "dpiCaption": "From {{min}} to {{max}}. Applies to both axes.",
+    "apply": "Apply"
   }
 }
