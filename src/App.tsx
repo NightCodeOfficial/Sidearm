@@ -549,7 +549,7 @@ function App() {
       showMigrationDialog ||
       showOnboarding ||
       !!synapseParsed ||
-      viewState === "error";
+      error !== null;
     if (anyModalOpen && e.key !== "Escape") {
       return;
     }
@@ -589,7 +589,7 @@ function App() {
         setActionPickerBindingId(null);
       } else if (confirmModal) {
         setConfirmModal(null);
-      } else if (viewState === "error") {
+      } else if (error !== null) {
         // Escape dismisses the error modal (mirrors ErrorModal's onDismiss).
         // Without this it fell through to the else below, which left the modal
         // open AND cleared the background control selection as a side effect.
@@ -1146,7 +1146,9 @@ function App() {
         />
       ) : null}
       <ErrorModal
-        error={viewState === "error" ? error : null}
+        // Any error, not only a failed load: settings/autostart/etc. failures
+        // set the same state and used to vanish while the config was loaded.
+        error={error}
         onDismiss={() => setError(null)}
         onAction={handleErrorAction}
       />

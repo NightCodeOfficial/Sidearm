@@ -15,7 +15,7 @@ The React 19 + TypeScript UI. Renders the mouse visualization, action editors, p
 - Strict CSP forbids inline styles: set dynamic styles via the CSSOM (`ref`/`el.style.setProperty`), never `style={}`. `canon-guards.test.ts` ratchets design-system rules.
 - react-compiler is on: avoid adding manual `useMemo`/`useCallback` for micro-opts; clean them as you touch code (keep `useEffectEvent` where already used).
 - Every user-facing string is an i18next key present in both locales (see `i18n/AGENTS.md`).
-- Backend calls go through `lib/backend.ts` wrappers, never raw `invoke`. Surface failures via `setError`/`showToast`; never swallow a user-relevant error.
+- Backend calls go through `lib/backend.ts` wrappers, never raw `invoke`. Surface failures via `setError`/`showToast`; never swallow a user-relevant error. `setError` opens `ErrorModal` whenever an error is set (not only on a failed config load).
 
 ## Work Guidance
 
