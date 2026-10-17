@@ -26,6 +26,7 @@ import type {
   VerificationStepResult,
 } from "../lib/verification-session";
 import { verificationScopeCopy } from "../lib/constants";
+import { isBuiltinControl } from "../lib/onboard-mapping";
 import {
   displayNameForControl,
   formatTimestamp,
@@ -146,6 +147,19 @@ export function DebugWorkspace(props: DebugWorkspaceProps) {
     handleExport: handleExportVerificationSession,
   } = verification;
 
+  // The tester picks a button and layer by name; its signal is the value the
+  // preview commands resolve. Ordered like the device's control list.
+  const testTargets = activeConfig.physicalControls.flatMap((control) =>
+    activeConfig.encoderMappings
+      .filter((mapping) => mapping.controlId === control.id)
+      .map((mapping) => ({
+        value: mapping.encodedKey,
+        label: `${displayNameForControl(control)} · ${t(`layer.${mapping.layer}`)}`,
+      })),
+  );
+  // Signals live only on user devices; the session checks those by code.
+  const hasUserDevice = activeConfig.devices.some((device) => !device.builtin);
+
   const resolvedLiveRunnable =
     lastResolutionPreview?.actionId
       ? isActionLiveRunnable(activeConfig, lastResolutionPreview.actionId)
@@ -158,20 +172,12 @@ export function DebugWorkspace(props: DebugWorkspaceProps) {
       {/* ── Testing toolbar ── */}
       <div className="debug-testing">
         <div className="debug-testing__bar">
-          <input
-            type="text"
+          <SelectField
             className="debug-testing__input"
+            label={t("debug.targetLabel")}
             value={resolutionKeyInput}
-            onChange={(event) => {
-              setResolutionKeyInput(event.target.value);
-            }}
-            placeholder={t("debug.signalPlaceholder")}
-            title={t("debug.signalTooltip")}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && resolutionKeyInput.trim()) {
-                void handlePreviewResolution();
-              }
-            }}
+            options={testTargets}
+            onChange={setResolutionKeyInput}
           />
           <div className="debug-testing__actions">
             <button
@@ -285,10 +291,12 @@ export function DebugWorkspace(props: DebugWorkspaceProps) {
           executionHistory={selectedControlHistory}
           updateDraft={updateDraft}
           verificationSessionActive={!!verificationSession}
+          signalsHidden={selectedControl ? isBuiltinControl(activeConfig, selectedControl.id) : false}
         />
       </div>
 
-      {/* ── Collapsible verification session ── */}
+      {/* ── Collapsible verification session (user devices only) ── */}
+      {hasUserDevice ? (
       <details className="expert-log">
         <summary className="expert-log__summary">
           {t("debug.sessionTitle")}
@@ -639,6 +647,7 @@ export function DebugWorkspace(props: DebugWorkspaceProps) {
           )}
         </div>
       </details>
+      ) : null}
 
       {/* ── Collapsible event log ── */}
       <details className="expert-log" open>

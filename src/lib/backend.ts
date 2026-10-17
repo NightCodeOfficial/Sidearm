@@ -160,12 +160,6 @@ export async function parseSynapseSource(
   return invoke<ParsedSynapseProfiles>("parse_synapse_source", { path });
 }
 
-/** Write the bundled Razer Synapse profile to Downloads (for the user to
- * import into Synapse) and optionally reveal the folder. Returns its path. */
-export async function saveBundledSynapseProfile(reveal: boolean): Promise<string> {
-  return invoke<string>("save_bundled_synapse_profile", { reveal });
-}
-
 /** Best-effort onboarding pre-flight: is Razer Synapse installed/running? */
 export async function checkSynapseInstalled(): Promise<boolean> {
   return invoke<boolean>("check_synapse_installed");

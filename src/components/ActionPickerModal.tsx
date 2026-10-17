@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AppConfig, ControlId, Layer } from "../lib/config";
 import { ACTION_CATEGORIES } from "../lib/constants";
+import { isBuiltinControl } from "../lib/onboard-mapping";
 import { liveTestAction, listenEncodedKeyEvent, normalizeCommandError } from "../lib/backend";
 import {
   expectedEncodedKeyForControl,
@@ -99,7 +100,8 @@ export function ActionPickerModal({
     ? config.actions.find((a) => a.id === binding.actionId) ?? null
     : null;
 
-  // Encoder signal state
+  // Encoder signal state (user devices only — see isBuiltinControl)
+  const builtinControl = controlId ? isBuiltinControl(config, controlId) : false;
   const currentEncoderMapping = controlId && selectedLayer
     ? config.encoderMappings.find(
         (m) => m.controlId === controlId && m.layer === selectedLayer,
@@ -263,8 +265,9 @@ export function ActionPickerModal({
       });
     }
 
-    // Save encoder mapping if signal was set/changed
-    if (controlId && selectedLayer && signalDraft && signalDraft !== currentEncoderMapping?.encodedKey) {
+    // Save encoder mapping if signal was set/changed. Never for the built-in
+    // Naga: its signals are the codes Sidearm writes into the mouse.
+    if (controlId && selectedLayer && !builtinControl && signalDraft && signalDraft !== currentEncoderMapping?.encodedKey) {
       nextConfig = upsertEncoderMapping(nextConfig, {
         controlId,
         layer: selectedLayer,
@@ -460,7 +463,7 @@ export function ActionPickerModal({
               </div>
             ) : null}
 
-            {controlId && selectedLayer ? (
+            {controlId && selectedLayer && !builtinControl ? (
               <SignalCaptureField
                 signalDraft={signalDraft}
                 onChange={setSignalDraft}

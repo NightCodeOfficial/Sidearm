@@ -11,7 +11,7 @@ import {
   listenEncodedKeyEvent,
   normalizeCommandError,
   relaunchAsAdmin,
-  saveBundledSynapseProfile,
+  restoreOnboardControl,
   setAdminAutostart,
   setInputCaptureMode,
   startRuntime,
@@ -22,8 +22,8 @@ import { NagaIllustration } from "./NagaIllustration";
 import { ModalShell } from "../shared";
 import "./onboarding.css";
 
-type StepKey = "welcome" | "synapse" | "live" | "admin" | "tryit";
-const STEPS: StepKey[] = ["welcome", "synapse", "live", "admin", "tryit"];
+type StepKey = "welcome" | "mouse" | "live" | "admin" | "tryit";
+const STEPS: StepKey[] = ["welcome", "mouse", "live", "admin", "tryit"];
 
 type Lang = "ru" | "en";
 type CheckState = "ok" | "bad" | "pending";
@@ -56,20 +56,20 @@ export function OnboardingWizard({ config, applyConfig, onClose }: OnboardingWiz
   const [stepIdx, setStepIdx] = useState(0);
   const step = STEPS[stepIdx];
 
-  // Pre-flight
+  // Pre-flight. "ok" = Razer Synapse is neither installed nor running: Sidearm
+  // writes the mouse itself, and a running Synapse rewrites the buttons.
   const [synapseOk, setSynapseOk] = useState<CheckState>("pending");
   const [elevated, setElevated] = useState<CheckState>("pending");
 
   // Live test
   const [detected, setDetected] = useState<Set<number>>(new Set());
-  const [labels, setLabels] = useState<Record<number, string>>({});
   const [activeBtn, setActiveBtn] = useState<number | null>(null);
-  const [lastKey, setLastKey] = useState<string | null>(null);
+  const [lastButton, setLastButton] = useState<number | null>(null);
   const activeTimer = useRef<number | null>(null);
 
-  // Synapse-profile save (for the "Save profile" button on the Synapse step)
-  const [synapseSavedPath, setSynapseSavedPath] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  // "Write to the mouse" on the mouse step
+  const [mouseWritten, setMouseWritten] = useState(false);
+  const [mouseWriteError, setMouseWriteError] = useState<string | null>(null);
 
   // Admin
   const [admin, setAdmin] = useState<AdminAutostartStatus | null>(null);
@@ -91,7 +91,7 @@ export function OnboardingWizard({ config, applyConfig, onClose }: OnboardingWiz
       .then(() => !cancelled && setRuntimeSetupError(null))
       .catch((err) => !cancelled && setRuntimeSetupError(normalizeCommandError(err).message));
     void checkSynapseInstalled()
-      .then((ok) => !cancelled && setSynapseOk(ok ? "ok" : "bad"))
+      .then((present) => !cancelled && setSynapseOk(present ? "bad" : "ok"))
       .catch(() => !cancelled && setSynapseOk("bad"));
     void isRunningAsAdmin()
       .then((ok) => !cancelled && setElevated(ok ? "ok" : "bad"))
@@ -105,14 +105,13 @@ export function OnboardingWizard({ config, applyConfig, onClose }: OnboardingWiz
       const btn = fkeyToButton(e.encodedKey);
       if (btn === null) return;
       setActiveBtn(btn);
-      setLastKey(e.encodedKey);
+      setLastButton(btn);
       setDetected((prev) => {
         if (prev.has(btn)) return prev;
         const next = new Set(prev);
         next.add(btn);
         return next;
       });
-      setLabels((prev) => (prev[btn] ? prev : { ...prev, [btn]: e.encodedKey }));
       if (activeTimer.current) window.clearTimeout(activeTimer.current);
       activeTimer.current = window.setTimeout(() => setActiveBtn(null), 220);
     })
@@ -180,15 +179,14 @@ export function OnboardingWizard({ config, applyConfig, onClose }: OnboardingWiz
   }, [stepIdx, complete]);
   const goBack = useCallback(() => setStepIdx((i) => Math.max(0, i - 1)), []);
 
-  const saveSynapse = useCallback(async (reveal: boolean): Promise<string | null> => {
-    setSaveError(null);
+  const writeMouse = useCallback(async () => {
+    setMouseWriteError(null);
+    setMouseWritten(false);
     try {
-      const path = await saveBundledSynapseProfile(reveal);
-      setSynapseSavedPath(path);
-      return path;
+      await restoreOnboardControl();
+      setMouseWritten(true);
     } catch (err) {
-      setSaveError(normalizeCommandError(err).message);
-      return null;
+      setMouseWriteError(normalizeCommandError(err).message);
     }
   }, []);
 
@@ -281,7 +279,11 @@ export function OnboardingWizard({ config, applyConfig, onClose }: OnboardingWiz
                 <p className="onb-step__lead">{T.welcome.lead}</p>
                 <div className="onb-step__section-title">{T.welcome.checks}</div>
                 <div className="onb-checks">
-                  <CheckRow state={synapseOk} label={T.welcome.cSynapse} hint={hintFor(synapseOk, T)} />
+                  <CheckRow
+                    state={synapseOk}
+                    label={T.welcome.cSynapse}
+                    hint={synapseOk === "bad" ? T.welcome.synapseHint : hintFor(synapseOk, T)}
+                  />
                   <CheckRow
                     state={elevated}
                     label={T.welcome.cElevated}
@@ -308,30 +310,27 @@ export function OnboardingWizard({ config, applyConfig, onClose }: OnboardingWiz
               </>
             )}
 
-            {step === "synapse" && (
+            {step === "mouse" && (
               <>
-                <h2 className="onb-step__title">{T.synapse.title}</h2>
-                <p className="onb-step__lead">{T.synapse.lead}</p>
+                <h2 className="onb-step__title">{T.mouse.title}</h2>
+                <p className="onb-step__lead">{T.mouse.lead}</p>
                 <ol className="onb-steps-list">
-                  <li>{T.synapse.s1}</li>
-                  <li>{T.synapse.s2}</li>
-                  <li>{T.synapse.s3}</li>
-                  <li>{T.synapse.s4}</li>
+                  <li>{T.mouse.s1}</li>
+                  <li>{T.mouse.s2}</li>
                 </ol>
                 <div className="onb-actions">
-                  <button type="button" className="onb-btn primary" onClick={() => void saveSynapse(true)}>
-                    {T.synapse.save}
+                  <button type="button" className="onb-btn primary" onClick={() => void writeMouse()}>
+                    {T.mouse.write}
                   </button>
                 </div>
-                {synapseSavedPath && (
+                {mouseWritten && (
                   <div className="onb-result">
-                    <span className="onb-check__dot ok" />
-                    {T.synapse.saved}: <code className="onb-result__path">{synapseSavedPath}</code>
+                    <span className="onb-check__dot ok" /> {T.mouse.written}
                   </div>
                 )}
-                {saveError && (
+                {mouseWriteError && (
                   <div className="onb-result">
-                    <span className="onb-check__dot bad" /> {saveError}
+                    <span className="onb-check__dot bad" /> {mouseWriteError}
                   </div>
                 )}
               </>
@@ -341,11 +340,11 @@ export function OnboardingWizard({ config, applyConfig, onClose }: OnboardingWiz
               <>
                 <h2 className="onb-step__title">{T.live.title}</h2>
                 <p className="onb-step__lead">{T.live.lead}</p>
-                <NagaIllustration detected={detected} active={activeBtn} labels={labels} label={T.ariaNaga} />
+                <NagaIllustration detected={detected} active={activeBtn} label={T.ariaNaga} />
                 <div className="onb-live-readout">
-                  {lastKey ? (
+                  {lastButton !== null ? (
                     <>
-                      {T.live.last} <strong>{lastKey}</strong> — {detectedCount}/12
+                      {T.live.last} <strong>{lastButton}</strong> — {detectedCount}/12
                     </>
                   ) : (
                     T.live.waiting
@@ -499,16 +498,15 @@ interface Copy {
     cNaga: string;
     nagaHint: string;
     relaunch: string;
+    synapseHint: string;
   };
-  synapse: {
+  mouse: {
     title: string;
     lead: string;
     s1: string;
     s2: string;
-    s3: string;
-    s4: string;
-    save: string;
-    saved: string;
+    write: string;
+    written: string;
   };
   live: { title: string; lead: string; waiting: string; last: string; allDone: string };
   admin: { title: string; lead: string; enable: string; busy: string; already: string; autostartConfigured: string; relaunch: string; note: string };

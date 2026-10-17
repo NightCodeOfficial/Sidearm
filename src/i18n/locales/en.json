@@ -347,15 +347,14 @@
     "empty": "Log is empty. Start interception to see events."
   },
   "debug": {
-    "signalPlaceholder": "Signal code (F13, Ctrl+Shift+F20...)",
-    "signalTooltip": "Signal code sent by the mouse when a button is pressed",
+    "targetLabel": "Button and layer to test",
     "check": "Test",
-    "checkTooltip": "Determine the profile and action for the entered signal code",
+    "checkTooltip": "Determine the profile and action for the selected button",
     "test": "Dry run",
     "testTooltip": "Simulate action execution (no real keystrokes)",
     "live": "Live",
     "liveTooltip": "Execute the bound action for real (sends keystrokes to the system)",
-    "helpTesting": "Enter a signal code (e.g. F13, Ctrl+Shift+F20) and click Test to see which profile and action will be triggered. Dry run simulates without real keystrokes. Live executes for real.",
+    "helpTesting": "Pick a button and layer and click Test to see which profile and action will be triggered. Dry run simulates without real keystrokes. Live executes for real.",
     "profile": "Profile",
     "control": "Button",
     "result": "Result",
@@ -1228,29 +1227,28 @@
     "checkPending": "checking…",
     "welcome": {
       "title": "Welcome to Sidearm",
-      "lead": "Sidearm turns your Razer Naga buttons into per-app actions. Setup takes a couple of minutes: prepare Razer Synapse, verify the hardware live, and load a ready-made profile.",
+      "lead": "Sidearm turns Razer Naga buttons into handy per-app actions. Setup takes a couple of minutes: write the assignments into the mouse itself, test the hardware live, and load a ready-made profile.",
       "checks": "Environment check",
-      "cSynapse": "Razer Synapse installed",
+      "cSynapse": "Razer Synapse is out of the way",
       "cElevated": "Sidearm running as administrator",
       "cNaga": "Readiness",
       "nagaHint": "verified in the Test step",
-      "relaunch": "Restart as admin"
+      "relaunch": "Restart as admin",
+      "synapseHint": "found — close Synapse and turn off its autostart"
     },
-    "synapse": {
-      "title": "Set up Razer Synapse",
-      "lead": "For Sidearm to see your mouse buttons, the Naga must emit F13–F24. We ship a ready Synapse profile — save it and import it into Razer Synapse.",
-      "s1": "Click “Save profile” — the file lands in Downloads and the folder opens.",
-      "s2": "Open Razer Synapse → Profiles.",
-      "s3": "Import the saved Sidearm_profile.synapse4 and make it active.",
-      "s4": "Done — the Naga now emits F13–F24. We'll verify that next.",
-      "save": "Save profile",
-      "saved": "Saved"
+    "mouse": {
+      "title": "Assignments in the mouse's memory",
+      "lead": "Sidearm writes the button assignments into the Naga's own memory — Razer Synapse is not needed for this.",
+      "s1": "Click “Write to mouse” — Sidearm writes the buttons and checks that the mouse accepted them.",
+      "s2": "If Razer Synapse is installed, close it and turn off its autostart: while it runs, it rewrites the buttons.",
+      "write": "Write to mouse",
+      "written": "Done — the mouse accepted Sidearm's assignments."
     },
     "live": {
       "title": "Live hardware test",
-      "lead": "Press the buttons on the Naga side panel — they should light up here. This confirms Synapse is really emitting the F-keys.",
+      "lead": "Press the buttons on the Naga's side panel — they should light up here. This confirms the mouse responds.",
       "waiting": "Waiting for presses… press any Naga button.",
-      "last": "Captured key",
+      "last": "Button pressed",
       "allDone": "Nice — all 12 buttons respond!"
     },
     "admin": {

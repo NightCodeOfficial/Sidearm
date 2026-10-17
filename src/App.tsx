@@ -54,6 +54,7 @@ import {
 } from "./lib/backend";
 import { displayNameForControl, labelForLayer, relativeTime } from "./lib/labels";
 import { exportProfileToFile } from "./lib/profile-transfer";
+import { isBuiltinControl } from "./lib/onboard-mapping";
 import type { ErrorActionKind } from "./lib/errors";
 import type { ParsedSynapseProfiles } from "./lib/synapse-import";
 import {
@@ -936,7 +937,11 @@ function App() {
                 control,
                 binding,
                 action: binding ? actionById.get(binding.actionId) ?? null : null,
-                mapping: encoderByControlId.get(control.id) ?? null,
+                // The built-in Naga's signals are Sidearm's own transport codes —
+                // not shown (the tooltip prints a mapping as "Thumb 1 (F13)").
+                mapping: isBuiltinControl(activeConfig, control.id)
+                  ? null
+                  : encoderByControlId.get(control.id) ?? null,
                 isSelected: control.id === selectedControlId,
               };
             }) ?? [],

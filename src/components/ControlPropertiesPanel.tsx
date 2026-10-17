@@ -46,6 +46,9 @@ export interface ControlPropertiesPanelProps {
   executionHistory?: ExecutionRecord[];
   updateDraft?: (updater: (config: AppConfig) => AppConfig) => void;
   verificationSessionActive?: boolean;
+  /** The control's signal is Sidearm's own transport code (built-in Naga):
+   *  hide the signal chip and the signal-verification workflow. */
+  signalsHidden?: boolean;
 }
 
 export function ControlPropertiesPanel({
@@ -60,9 +63,10 @@ export function ControlPropertiesPanel({
   executionHistory,
   updateDraft,
   verificationSessionActive,
+  signalsHidden = false,
 }: ControlPropertiesPanelProps) {
   const { t } = useTranslation();
-  const hasVerificationMode = selectedLayer != null && updateDraft != null;
+  const hasVerificationMode = selectedLayer != null && updateDraft != null && !signalsHidden;
 
   // Verification-mode derived values
   const expectedEncodedKey =
@@ -103,7 +107,7 @@ export function ControlPropertiesPanel({
       <div className="props-header">
         <div className="props-header__title">
           <h2>{displayNameForControl(selectedControl, "raw")}</h2>
-          {selectedEncoder?.encodedKey ? (
+          {signalsHidden ? null : selectedEncoder?.encodedKey ? (
             <code className="props-header__signal">{selectedEncoder.encodedKey}</code>
           ) : (
             <span className="props-header__signal props-header__signal--empty">{t("properties.signalEmpty")}</span>

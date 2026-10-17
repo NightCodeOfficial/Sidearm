@@ -21,6 +21,7 @@ All React components: mouse visualization, modals (action picker, app-mapping, c
 
 ## Work Guidance
 
+- Signals (`encoderMappings`, e.g. `F13`) of the built-in Naga are Sidearm's own transport codes, written into the mouse by the backend: never show or edit them there (`isBuiltinControl` in `lib/onboard-mapping.ts`). The action picker hides `SignalCaptureField` and never saves a mapping for them, Diagnostics hides the signal chip + verification workflow (`signalsHidden`) and shows the verification session only when a user device exists, the tester picks "button · layer" instead of a typed code, and hotspot tooltips drop the code. User devices keep every signal UI — the recorded signal is how a button is identified. Onboarding writes the mouse (`restoreOnboardControl`) instead of teaching Synapse/F-keys.
 - An unassigned control is labelled "Native action" (it passes through to the device/Synapse default), distinct from the "OFF" pill for an explicitly-disabled binding.
 - Multi-device (v3): `DeviceBar` switches `AppConfig.devices`; the built-in Naga renders `MouseVisualization`, user devices render `GenericDeviceView` (legend grid + optional photo with click-to-place hotspots). `AddControlModal` learns a button via DOM key capture — do NOT switch it to the runtime `encoded_key_received` event: the low-level hook only hears already-mapped signals. Device photos are served as `data:` URLs via `read_device_image` (asset protocol deliberately off — its scope vars can't cover the portable `./data`).
 

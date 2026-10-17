@@ -1,6 +1,6 @@
 /**
  * Stylised Razer Naga thumb-grid (12 buttons, 3×4) used by the onboarding
- * live-test step. Buttons light up as the matching F-key arrives from the
+ * live-test step. Buttons light up as their press arrives from the
  * `encoded_key_received` stream. Purely presentational.
  */
 
@@ -9,8 +9,6 @@ interface NagaIllustrationProps {
   detected: Set<number>;
   /** 1-based button currently being pressed (flash highlight), or null. */
   active: number | null;
-  /** Optional map of button number → detected key label (e.g. 7 → "F19"). */
-  labels?: Record<number, string>;
   /** Localized accessible name for the illustration. */
   label?: string;
 }
@@ -18,7 +16,7 @@ interface NagaIllustrationProps {
 // The Naga side grid is laid out 3 columns × 4 rows: 1-2-3 / 4-5-6 / 7-8-9 / 10-11-12.
 const BUTTONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
-export function NagaIllustration({ detected, active, labels, label }: NagaIllustrationProps) {
+export function NagaIllustration({ detected, active, label }: NagaIllustrationProps) {
   return (
     <div className="onb-naga" role="img" aria-label={label ?? "Razer Naga thumb grid"}>
       <div className="onb-naga__body">
@@ -36,7 +34,6 @@ export function NagaIllustration({ detected, active, labels, label }: NagaIllust
             return (
               <div key={n} className={cls} aria-label={`Button ${n}`}>
                 <span className="onb-naga__num">{n}</span>
-                {labels?.[n] ? <span className="onb-naga__key">{labels[n]}</span> : null}
               </div>
             );
           })}

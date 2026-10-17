@@ -1692,43 +1692,8 @@ async fn import_synapse_into_config(
 }
 
 // ============================================================================
-// Onboarding — bundled Synapse profile + environment checks
+// Onboarding — environment checks
 // ============================================================================
-
-/// The Razer Synapse profile shipped with Sidearm. The user imports it into
-/// Razer Synapse so the Naga emits F13–F24; it also seeds Sidearm's own
-/// bindings via the normal Synapse-import pipeline. Embedded with
-/// `include_bytes!` because the portable build assembles by hand and does not
-/// run Tauri's resource bundler.
-const BUNDLED_SYNAPSE_PROFILE: &[u8] = include_bytes!("../resources/Sidearm_profile.synapse4");
-const BUNDLED_SYNAPSE_FILENAME: &str = "Sidearm_profile.synapse4";
-
-/// Write the bundled Synapse profile into the user's Downloads folder so they
-/// can import it into Razer Synapse, optionally revealing the folder. Returns
-/// the absolute path written — the onboarding wizard reuses it as the source
-/// for `parse_synapse_source` when seeding Sidearm's own bindings.
-#[tauri::command]
-async fn save_bundled_synapse_profile(
-    app: AppHandle,
-    reveal: bool,
-) -> Result<String, CommandError> {
-    let dir = app
-        .path()
-        .download_dir()
-        .map_err(|e| CommandError::internal(format!("download_dir: {e}")))?;
-    let dest = dir.join(BUNDLED_SYNAPSE_FILENAME);
-    config::persist_atomically(&dest, |file| {
-        use std::io::Write as _;
-        file.write_all(BUNDLED_SYNAPSE_PROFILE)
-    })
-    .map_err(|e| CommandError::internal(format!("write bundled profile: {e}")))?;
-    if reveal {
-        // Open the containing folder — passing the file itself would make
-        // Explorer try to "open" the unknown .synapse4 type.
-        let _ = crate::platform::shell::open_in_explorer(&dir);
-    }
-    Ok(dest.to_string_lossy().into_owned())
-}
 
 /// Best-effort check for the onboarding pre-flight: is Razer Synapse installed
 /// or running? Windows-only signal; returns false on other platforms.
@@ -3506,7 +3471,6 @@ pub fn run() {
             accept_portable_migration,
             parse_synapse_source,
             import_synapse_into_config,
-            save_bundled_synapse_profile,
             check_synapse_installed,
             set_input_capture_mode,
             start_runtime,

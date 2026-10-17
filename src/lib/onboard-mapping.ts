@@ -43,6 +43,18 @@ export function onboardBindings(config: AppConfig): OnboardBinding[] {
 }
 
 /**
+ * Whether a control belongs to the built-in Naga. Sidearm writes that device's
+ * signals into the mouse itself, so they are an internal transport detail the
+ * UI neither shows nor lets the user edit; user devices are identified by the
+ * signal the user recorded and keep it visible.
+ */
+export function isBuiltinControl(config: AppConfig, controlId: ControlId | string): boolean {
+  const control = config.physicalControls.find((entry) => entry.id === controlId);
+  if (!control) return false;
+  return config.devices.some((device) => device.id === control.deviceId && device.builtin === true);
+}
+
+/**
  * What the backend's takeover guard had to take back from Razer's engine: the
  * device mode that made the firmware ignore onboard memory, or the onboard slots
  * themselves. The guard already put the device back; the event tells the UI so
