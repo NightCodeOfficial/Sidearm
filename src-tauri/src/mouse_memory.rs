@@ -34,6 +34,7 @@
 //! verified with two reads and one retry.
 
 use std::io::Error;
+use std::sync::{Mutex, MutexGuard};
 
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -281,12 +282,23 @@ pub fn native_buttons() -> &'static [(&'static str, u8, u8)] {
 /// Open handle to the vendor HID collection plus the feature-report plumbing.
 pub struct VendorDevice {
     handle: HANDLE,
+    /// Held for the handle's whole life: one exchange is a `SET_REPORT` followed
+    /// by a separate `GET_REPORT`, so two users at once read each other's
+    /// replies (measured: a restore read the guard's button reply, whose byte 8
+    /// is the profile `0x01`, as "device stayed in mode 0x01", and the guard
+    /// reported a rewritten button that was not). One user at a time.
+    _exclusive: MutexGuard<'static, ()>,
 }
+
+/// Serializes every [`VendorDevice`] in this process.
+static DEVICE_LOCK: Mutex<()> = Mutex::new(());
 
 impl VendorDevice {
     /// Opens the vendor collection of `vid:pid`, discovering its interface path
     /// in the registry. Returns `Err(String)` with an OS-error description.
     pub fn open(vid: u16, pid: u16) -> Result<Self, String> {
+        // A panic mid-exchange leaves no state behind the lock worth refusing for.
+        let exclusive = DEVICE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let path = find_interface_path(vid, pid)?;
         let mut wide: Vec<u16> = path.encode_utf16().collect();
         wide.push(0);
@@ -306,7 +318,7 @@ impl VendorDevice {
         if handle == INVALID_HANDLE_VALUE {
             return Err(format!("{}: CreateFileW({path})", Error::last_os_error()));
         }
-        Ok(Self { handle })
+        Ok(Self { handle, _exclusive: exclusive })
     }
 
     /// Writes one button record into its slot and verifies it read back.
