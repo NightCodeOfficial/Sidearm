@@ -155,6 +155,14 @@ impl RuntimeStore {
         self.log_send_pending = Some(pending);
     }
 
+    /// The profile the runtime applied last: the manual override, else the one
+    /// the last foreground resolution picked. `None` before any resolution.
+    pub fn last_active_profile_id(&self) -> Option<&str> {
+        self.manual_profile_override
+            .as_deref()
+            .or(self.last_notified_profile_id.as_deref())
+    }
+
     /// The active manual profile override (audit F003), if a ProfileSwitch set one.
     pub fn manual_profile_override(&self) -> Option<&str> {
         self.manual_profile_override.as_deref()

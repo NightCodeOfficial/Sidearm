@@ -13,6 +13,8 @@ mod log_cleanup;
 #[cfg(target_os = "windows")]
 mod mouse_memory;
 #[cfg(target_os = "windows")]
+mod mouse_offline;
+#[cfg(target_os = "windows")]
 mod onboard_guard;
 #[cfg(target_os = "windows")]
 mod tray_badge;
@@ -2738,6 +2740,25 @@ async fn restore_onboard_control(app: AppHandle) -> Result<(), CommandError> {
     .map_err(|e| CommandError::internal(format!("restore_onboard_control task failed: {e}")))?
 }
 
+/// On exit: store the profile in effect in the mouse itself, so its simple
+/// bindings keep working while Sidearm is closed (see `mouse_offline`).
+#[cfg(target_os = "windows")]
+fn write_offline_mouse_profile(app: &AppHandle) {
+    let Ok(config_dir) = resolve_config_dir(app) else {
+        return;
+    };
+    let Ok(config) = config::read_and_migrate_config_file(&config_dir.join("config.json")) else {
+        return;
+    };
+    let store = app.state::<Arc<Mutex<RuntimeStore>>>();
+    let profile_id = store
+        .lock()
+        .ok()
+        .and_then(|store| store.last_active_profile_id().map(str::to_owned))
+        .unwrap_or_else(|| config.settings.fallback_profile_id.clone());
+    mouse_offline::write_offline_profile(&config, &profile_id, &config_dir);
+}
+
 /// Opens the mouse, runs `work` on it, and returns its fresh settings.
 #[cfg(target_os = "windows")]
 async fn with_mouse_settings(
@@ -3603,6 +3624,15 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 log::info!("[system] Clean shutdown.");
+                // Stop the capture helper first: an orphaned helper keeps its
+                // mouse hook alive and swallows back/forward after exit.
+                if let Ok(mut controller) = app.state::<Arc<Mutex<RuntimeController>>>().lock()
+                    && let Err(message) = controller.stop()
+                {
+                    log::warn!("[system] runtime stop on exit failed: {message}");
+                }
+                #[cfg(target_os = "windows")]
+                write_offline_mouse_profile(app);
                 remove_crash_sentinel(app);
             }
         });

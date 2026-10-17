@@ -116,6 +116,9 @@ const CMD_SET_BUTTON: u8 = 0x0c;
 /// Category byte of a button record that acts as a plain mouse button; its
 /// value is the button number (`1` left, `2` right, `3` middle).
 const CATEGORY_MOUSE: u8 = 0x01;
+/// Category of the firmware Hypershift key (seen on the right button after
+/// Synapse stored its profile).
+const CATEGORY_HYPERSHIFT: u8 = 0x0c;
 /// Sensor class: DPI get/set (OpenRazer naming, confirmed on this device).
 const CLASS_DPI: u8 = 0x04;
 const CMD_SET_DPI: u8 = 0x05;
@@ -309,6 +312,85 @@ pub struct ButtonRecord {
     pub usage: u8,
 }
 
+/// A record the firmware plays back on its own, without Sidearm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardAction {
+    /// A key with a HID modifier mask (Ctrl `0x01`, Shift `0x02`, Alt `0x04`, Win `0x08`).
+    Key { modifier: u8, usage: u8 },
+    /// A plain mouse button (`1` left … `5` forward).
+    Mouse(u8),
+    /// The firmware Hypershift key: while held, the buttons play their layer-1 records.
+    Hypershift,
+}
+
+impl OnboardAction {
+    /// `category, len, values…` as the set/get-button commands carry them.
+    fn bytes(self) -> Vec<u8> {
+        match self {
+            Self::Key { modifier, usage } => vec![CATEGORY_KEY, 0x02, modifier, usage],
+            Self::Mouse(value) => vec![CATEGORY_MOUSE, 0x01, value],
+            Self::Hypershift => vec![CATEGORY_HYPERSHIFT, 0x01, 0x01],
+        }
+    }
+
+    fn matches(self, held: &ButtonRecord) -> bool {
+        match self {
+            Self::Key { modifier, usage } => {
+                held.category == CATEGORY_KEY && held.modifier == modifier && held.usage == usage
+            }
+            Self::Mouse(value) => held.is_mouse_button(value),
+            Self::Hypershift => held.category == CATEGORY_HYPERSHIFT,
+        }
+    }
+}
+
+/// HID usage of a Windows virtual-key code, for the keys an onboard record
+/// can carry. `None` for anything else (media keys, IME keys, …).
+pub fn hid_usage_for_vk(vk: u16) -> Option<u8> {
+    let vk = vk as u8;
+    Some(match vk {
+        0x41..=0x5A => 0x04 + (vk - 0x41),       // A..Z
+        0x31..=0x39 => 0x1E + (vk - 0x31),       // 1..9
+        0x30 => 0x27,                            // 0
+        0x70..=0x7B => 0x3A + (vk - 0x70),       // F1..F12
+        0x7C..=0x87 => USAGE_F13 + (vk - 0x7C),  // F13..F24
+        0x60 => 0x62,                            // NumPad 0
+        0x61..=0x69 => 0x59 + (vk - 0x61),       // NumPad 1..9
+        0x0D => 0x28,
+        0x1B => 0x29,
+        0x08 => 0x2A,
+        0x09 => 0x2B,
+        0x20 => 0x2C,
+        0xBD => 0x2D, // - _
+        0xBB => 0x2E, // = +
+        0xDB => 0x2F, // [ {
+        0xDD => 0x30, // ] }
+        0xDC => 0x31, // \ |
+        0xBA => 0x33, // ; :
+        0xDE => 0x34, // ' "
+        0xC0 => 0x35, // ` ~
+        0xBC => 0x36, // , <
+        0xBE => 0x37, // . >
+        0xBF => 0x38, // / ?
+        0x14 => 0x39, // Caps Lock
+        0x2C => 0x46, // Print Screen
+        0x91 => 0x47, // Scroll Lock
+        0x13 => 0x48, // Pause
+        0x2D => 0x49, // Insert
+        0x24 => 0x4A, // Home
+        0x21 => 0x4B, // Page Up
+        0x2E => 0x4C, // Delete
+        0x23 => 0x4D, // End
+        0x22 => 0x4E, // Page Down
+        0x27 => 0x4F, // Right
+        0x25 => 0x50, // Left
+        0x28 => 0x51, // Down
+        0x26 => 0x52, // Up
+        0x5D => 0x65, // Menu
+        _ => return None,
+    })
+}
+
 impl ButtonRecord {
     /// A mouse-category record carries the button number in the byte a key
     /// record uses for its modifier.
@@ -472,8 +554,15 @@ impl VendorDevice {
     /// anything. This is the only honest way to see what another program stored —
     /// the slot query answers with whatever the last write put there.
     pub fn read_button(&self, button_id: u8) -> Result<ButtonRecord, String> {
+        self.read_button_at(button_id, 0)
+    }
+
+    /// The stored record of `button_id` on `layer` (`0` standard, `1` the
+    /// firmware Hypershift layer).
+    pub fn read_button_at(&self, button_id: u8, layer: u8) -> Result<ButtonRecord, String> {
         let mut args = GET_BUTTON_ARGS;
         args[1] = button_id;
+        args[2] = layer;
         let reply = self.command(CLASS_BUTTON, CMD_GET_BUTTON, &args)?;
         let record = &reply[8..18];
         Ok(ButtonRecord {
@@ -532,6 +621,25 @@ impl VendorDevice {
         match self.poll_rate_hz()? {
             read if read == hz => Ok(()),
             read => Err(format!("mouse kept {read} Hz after a write of {hz} Hz")),
+        }
+    }
+
+    /// Stores `action` as the record of `button_id` on `layer` and requires it
+    /// to read back (measured: a layer-1 key and a layer-0 mouse button both
+    /// read back exactly as written).
+    pub fn write_record(&self, button_id: u8, layer: u8, action: OnboardAction) -> Result<(), String> {
+        let mut args = [0u8; 10];
+        args[0] = 0x01;
+        args[1] = button_id;
+        args[2] = layer;
+        let bytes = action.bytes();
+        args[3..3 + bytes.len()].copy_from_slice(&bytes);
+        self.command(CLASS_BUTTON, CMD_SET_BUTTON, &args)?;
+        let held = self.read_button_at(button_id, layer)?;
+        if action.matches(&held) {
+            Ok(())
+        } else {
+            Err(format!("button {button_id:#04x} layer {layer} did not read back as {action:?}"))
         }
     }
 

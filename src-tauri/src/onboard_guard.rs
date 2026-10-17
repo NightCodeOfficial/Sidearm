@@ -236,6 +236,16 @@ fn run(
         }
         razer_was_running = razer_running;
 
+        // The mouse may still hold the offline profile written at the last exit:
+        // put Sidearm's signals back quietly before the check would call it drift.
+        if config_dir.join(crate::mouse_offline::OFFLINE_MARKER_FILE).exists()
+            && let Some(config) = read_config(config_dir)
+            && !crate::mouse_offline::restore_after_offline(&config, config_dir)
+        {
+            wait = FAST_POLL;
+            continue;
+        }
+
         let verdict = check_once(
             app,
             runtime_store,
