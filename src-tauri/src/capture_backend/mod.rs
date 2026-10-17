@@ -261,10 +261,22 @@ fn process_encoded_key_event(
 
     let _ = app.emit(EVENT_ENCODED_KEY_RECEIVED, &event);
 
+    // Mirrors "Key-up received": without it a press that never reaches dispatch
+    // leaves only its key-up in the file log.
+    if !event.is_key_up {
+        log::info!(
+            "[capture] Key-down received for {} (hypershift: {}, repeat: {})",
+            event.encoded_key,
+            event.is_hypershift,
+            event.is_repeat
+        );
+    }
+
     // Live-capture/test mode: the UI just observed the raw key above; do NOT
     // resolve, execute, or inject it. Lets the onboarding hardware test light
     // up buttons without firing their real actions (search/delete/etc.).
     if SUPPRESS_EXECUTION.load(Ordering::Relaxed) {
+        log::info!("[capture] Not dispatched {}: live-capture mode", event.encoded_key);
         flush_log_entries(runtime_store, log_entries);
         return EventOutcome::Handled;
     }
@@ -473,6 +485,30 @@ fn process_encoded_key_event(
 
     let _ = app.emit(EVENT_CONTROL_RESOLVED, &preview);
     if preview.status != resolver::ResolutionStatus::Resolved {
+        log::info!(
+            "[capture] Not dispatched {} ({:?}): {}",
+            preview.encoded_key,
+            preview.status,
+            preview.reason
+        );
+        flush_log_entries(runtime_store, log_entries);
+        return EventOutcome::Handled;
+    }
+
+    // Sidearm's own window is where buttons are configured and checked: a press
+    // there only highlights the control (the event above) and never fires.
+    // Otherwise our injected keys reach the window's own shortcuts — a thumb
+    // sending Backspace cleared the selected control's binding.
+    if capture_result.ignore_reason.as_deref() == Some(window_capture::OWN_WINDOW_REASON) {
+        log::info!("[capture] Not dispatched {}: Sidearm's own window", preview.encoded_key);
+        log_entries.push((
+            "перехват",
+            format!(
+                "Окно Sidearm активно — `{}` только подсвечен, действие не выполнено.",
+                preview.encoded_key
+            ),
+            false,
+        ));
         flush_log_entries(runtime_store, log_entries);
         return EventOutcome::Handled;
     }

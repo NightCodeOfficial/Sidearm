@@ -37,6 +37,10 @@ pub fn capture_active_window_with_resolution(
     capture_active_window_with_resolution_with_override(config, app_name, delay_ms, None)
 }
 
+/// `ignore_reason` of a capture whose foreground window is Sidearm's own; the
+/// dispatch path matches on it to keep button presses from firing there.
+pub const OWN_WINDOW_REASON: &str = "Foreground window belongs to the Studio process.";
+
 /// [`capture_active_window_with_resolution`] threaded with the manual profile override
 /// (audit F003) so the OSD/active-profile indicator reflects a ProfileSwitch, matching
 /// what the dispatch path fires.
@@ -52,7 +56,7 @@ pub fn capture_active_window_with_resolution_with_override(
 
     let raw_window = capture_foreground_window()?;
     let ignore_reason = if should_ignore_window(raw_window.pid) {
-        Some("Foreground window belongs to the Studio process.")
+        Some(OWN_WINDOW_REASON)
     } else if is_shell_chrome_window(&raw_window.exe, &raw_window.title) {
         Some("Foreground window is the Windows shell (taskbar/tray).")
     } else {
