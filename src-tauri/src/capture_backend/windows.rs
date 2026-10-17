@@ -198,6 +198,10 @@ thread_local! {
     static HELPER_MATCHES: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
     static HELPER_THREAD_ID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Match line emitted for a held side button (index 0 = X1, 1 = X2), so its
+    /// release emits the matching key-up even if the trigger changed meanwhile.
+    static HELPER_SIDE_BUTTON_DOWN: std::cell::RefCell<[Option<String>; 2]> =
+        const { std::cell::RefCell::new([None, None]) };
     /// Factory-defaults signature tracker (see FactoryDefaultsDetector above).
     static HELPER_DEFAULTS_DETECTOR: std::cell::RefCell<FactoryDefaultsDetector> =
         std::cell::RefCell::new(FactoryDefaultsDetector::default());
@@ -293,6 +297,24 @@ struct RegisteredHotkey {
     primary_vk: u32,
     /// Set on the hypershift-layer scroll-wheel encodings.
     wheel: Option<WheelAxis>,
+    /// Set on a side button (mouse 4/5) bound on this layer: see [`ButtonCapture`].
+    button: Option<ButtonCapture>,
+}
+
+/// A native side button (XBUTTON1/2) the mouse hook turns into `encoded_key`.
+///
+/// The mouse reports mouse 4/5 as plain X buttons (its onboard records are
+/// native, so it still works without Sidearm), which no keyboard registration
+/// can match — so bindings on them never fired. The hook emits the encoder
+/// mapping instead, for the layer in effect, and only when that layer has an
+/// enabled binding: an unbound button keeps its native back/forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ButtonCapture {
+    /// `HYPER_TRIGGER_X1` / `HYPER_TRIGGER_X2`.
+    code: u8,
+    /// The registration is the hypershift-layer encoding.
+    hypershift: bool,
 }
 
 /// IPC registration sent from the main process to the capture helper.
@@ -305,6 +327,9 @@ struct HelperRegistration {
     /// is captured while the trigger is held and emitted as `encoded_key`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     wheel: Option<WheelAxis>,
+    /// Set on a bound side button: emitted by the mouse hook (see [`ButtonCapture`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    button: Option<ButtonCapture>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1305,12 +1330,28 @@ fn build_hotkey_registrations(config: &AppConfig) -> Result<Vec<RegisteredHotkey
                 })
             });
 
+        // Side buttons are native X buttons on the wire (see `ButtonCapture`):
+        // tag the mapping when its layer has an enabled binding to fire.
+        let button = side_button_code(mapping.control_id.as_str())
+            .filter(|_| {
+                config.bindings.iter().any(|binding| {
+                    binding.enabled
+                        && binding.layer == mapping.layer
+                        && binding.control_id == mapping.control_id
+                })
+            })
+            .map(|code| ButtonCapture {
+                code,
+                hypershift: mapping.layer == crate::config::Layer::Hypershift,
+            });
+
         registrations.push(RegisteredHotkey {
             id: (index + 1) as i32,
             encoded_key: hotkey.canonical,
             modifiers_mask: register_hotkey_mask(&hotkey.modifiers),
             primary_vk: u32::from(hotkey.key.code),
             wheel,
+            button,
         });
     }
 
@@ -1517,6 +1558,30 @@ fn hypershift_trigger_code(control_id: &str) -> u8 {
     }
 }
 
+/// X-button code of a side-button control id.
+fn side_button_code(control_id: &str) -> Option<u8> {
+    match control_id.trim() {
+        "mouse_4" => Some(HYPER_TRIGGER_X1),
+        "mouse_5" => Some(HYPER_TRIGGER_X2),
+        _ => None,
+    }
+}
+
+/// The match line a side-button press becomes, or `None` to leave it native.
+/// With the trigger held the hypershift encoding wins (stamped `HS:`); without
+/// a hypershift binding the standard one still fires, stamped, so the resolver
+/// falls back to the standard binding exactly as it does for the thumbs.
+fn side_button_capture(regs: &[HelperRegistration], code: u8, trigger_held: bool) -> Option<String> {
+    let find = |hypershift: bool| {
+        regs.iter()
+            .find(|reg| reg.button == Some(ButtonCapture { code, hypershift }))
+            .map(|reg| reg.encoded_key.as_str())
+    };
+    let key = if trigger_held { find(true).or_else(|| find(false)) } else { find(false) }?;
+    let prefix = if trigger_held { HS_PREFIX } else { "" };
+    Some(format!("{prefix}{key}"))
+}
+
 /// Maps a scroll-wheel control id onto the axis the mouse hook captures.
 fn wheel_axis_for_control(control_id: &str) -> Option<WheelAxis> {
     match control_id.trim() {
@@ -1526,6 +1591,16 @@ fn wheel_axis_for_control(control_id: &str) -> Option<WheelAxis> {
         "wheel_right" => Some(WheelAxis::Right),
         _ => None,
     }
+}
+
+/// A registration captures a side button, so the mouse hook is needed even
+/// with Hypershift off.
+static HELPER_CAPTURES_SIDE_BUTTONS: AtomicBool = AtomicBool::new(false);
+
+/// Whether the helper needs its mouse hook at all.
+fn mouse_hook_wanted() -> bool {
+    HELPER_HYPER_TRIGGER.load(Ordering::Relaxed) != HYPER_TRIGGER_OFF
+        || HELPER_CAPTURES_SIDE_BUTTONS.load(Ordering::Relaxed)
 }
 
 /// Trigger the helper acts on (`HYPER_TRIGGER_OFF` = Hypershift disabled).
@@ -1585,6 +1660,11 @@ enum HyperMouseAction {
     /// Swallow a scroll tick and emit the hypershift-layer encoding of that
     /// wheel direction (the firmware can never produce it itself).
     CaptureWheel(String),
+    /// Swallow a side-button press and emit this match line (see
+    /// [`side_button_capture`]); the release must be swallowed too.
+    CaptureButtonDown(u8, String),
+    /// Swallow the release of a captured side button and emit its key-up.
+    CaptureButtonUp(u8, String),
 }
 
 /// Maps a button message onto `(trigger code, is_down)`. `None` for every
@@ -1837,14 +1917,32 @@ unsafe extern "system" fn helper_ll_mouse_proc(code: i32, w_param: usize, l_para
     // and fall through to CallNextHookEx (never suppress on a panic).
     let action = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let trigger = HELPER_HYPER_TRIGGER.load(Ordering::Relaxed);
-        if trigger == HYPER_TRIGGER_OFF {
-            return HyperMouseAction::Pass;
-        }
         if ms.dwExtraInfo == crate::input_synthesis::INTERNAL_SENDINPUT_EXTRA_INFO {
-            // Our own synthetic right click / Ctrl+wheel — pass it through.
+            // Our own synthetic right click / Ctrl+wheel / X button — pass it through.
             return HyperMouseAction::Pass;
         }
         let trigger_held = HELPER_HYPER_ACTIVE.load(Ordering::Relaxed);
+        if let Some((button, is_down)) = mouse_button_code(msg, ms.mouseData)
+            && (button == HYPER_TRIGGER_X1 || button == HYPER_TRIGGER_X2)
+            && button != trigger
+        {
+            let slot = usize::from(button - HYPER_TRIGGER_X1);
+            if is_down {
+                let line = HELPER_REGISTRATIONS
+                    .with(|cell| side_button_capture(&cell.borrow(), button, trigger_held));
+                return line.map_or(HyperMouseAction::Pass, |line| {
+                    HyperMouseAction::CaptureButtonDown(button, line)
+                });
+            }
+            return HELPER_SIDE_BUTTON_DOWN
+                .with(|cell| cell.borrow_mut()[slot].take())
+                .map_or(HyperMouseAction::Pass, |line| {
+                    HyperMouseAction::CaptureButtonUp(button, line)
+                });
+        }
+        if trigger == HYPER_TRIGGER_OFF {
+            return HyperMouseAction::Pass;
+        }
         if let Some(encoded_key) = HELPER_REGISTRATIONS
             .with(|cell| wheel_capture_action(&cell.borrow(), msg, ms.mouseData, trigger_held))
         {
@@ -1887,6 +1985,22 @@ unsafe extern "system" fn helper_ll_mouse_proc(code: i32, w_param: usize, l_para
             queue_hyper_injection(false);
             1
         }
+        HyperMouseAction::CaptureButtonDown(button, line) => {
+            HELPER_SIDE_BUTTON_DOWN
+                .with(|cell| cell.borrow_mut()[usize::from(button - HYPER_TRIGGER_X1)] = Some(line.clone()));
+            HELPER_MATCHES.with(|cell| cell.borrow_mut().push(line));
+            wake_helper_loop();
+            1
+        }
+        HyperMouseAction::CaptureButtonUp(_, line) => {
+            let up = match line.strip_prefix(HS_PREFIX) {
+                Some(key) => format!("{HS_PREFIX}UP:{key}"),
+                None => format!("UP:{line}"),
+            };
+            HELPER_MATCHES.with(|cell| cell.borrow_mut().push(up));
+            wake_helper_loop();
+            1
+        }
         HyperMouseAction::CaptureWheel(encoded_key) => {
             HELPER_MATCHES.with(|cell| {
                 let mut matches = cell.borrow_mut();
@@ -1911,7 +2025,7 @@ unsafe fn install_mouse_hook(
 ) -> windows_sys::Win32::UI::WindowsAndMessaging::HHOOK {
     use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_MOUSE_LL};
 
-    if HELPER_HYPER_TRIGGER.load(Ordering::Relaxed) == HYPER_TRIGGER_OFF {
+    if !mouse_hook_wanted() {
         return std::ptr::null_mut();
     }
     let handle = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(helper_ll_mouse_proc), hmod, 0) };
@@ -2024,7 +2138,8 @@ mod mouse_hook_tests {
         HYPER_TRIGGER_LEFT, HYPER_TRIGGER_MIDDLE, HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_X1,
         HYPER_TRIGGER_X2, HelperRegistration, HyperMouseAction, MOUSE_HEALTH_HELD_CYCLES,
         MouseHookHealth, WheelAxis, hyper_mouse_action, mouse_button_code, mouse_hook_health,
-        wheel_axis_for_control, wheel_capture_action,
+        wheel_axis_for_control, wheel_capture_action, ButtonCapture, side_button_capture,
+        side_button_code,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
@@ -2042,6 +2157,7 @@ mod mouse_hook_tests {
             modifiers_mask: 0,
             primary_vk: 0,
             wheel: Some(axis),
+            button: None,
         }
     }
 
@@ -2254,6 +2370,38 @@ mod mouse_hook_tests {
             wheel_capture_action(&regs, WM_MOUSEHWHEEL, tick(-120), true).as_deref(),
             Some("Shift+Alt+F17"),
         );
+    }
+
+    fn side_reg(encoded_key: &str, code: u8, hypershift: bool) -> HelperRegistration {
+        HelperRegistration {
+            encoded_key: encoded_key.into(),
+            modifiers_mask: 0,
+            primary_vk: 0,
+            wheel: None,
+            button: Some(ButtonCapture { code, hypershift }),
+        }
+    }
+
+    /// Side buttons fire their layer's binding; an unbound one stays native.
+    #[test]
+    fn side_button_emits_the_layer_in_effect() {
+        let regs = vec![
+            side_reg("Alt+F13", HYPER_TRIGGER_X1, false),
+            side_reg("Ctrl+Alt+F13", HYPER_TRIGGER_X1, true),
+            side_reg("Alt+F14", HYPER_TRIGGER_X2, false),
+        ];
+        assert_eq!(side_button_capture(&regs, HYPER_TRIGGER_X1, false).as_deref(), Some("Alt+F13"));
+        assert_eq!(
+            side_button_capture(&regs, HYPER_TRIGGER_X1, true).as_deref(),
+            Some("HS:Ctrl+Alt+F13")
+        );
+        // No hypershift binding: the stamped standard encoding lets the
+        // resolver fall back to the standard binding.
+        assert_eq!(side_button_capture(&regs, HYPER_TRIGGER_X2, true).as_deref(), Some("HS:Alt+F14"));
+        assert_eq!(side_button_capture(&regs[..1], HYPER_TRIGGER_X2, false), None, "unbound stays native");
+        assert_eq!(side_button_code("mouse_4"), Some(HYPER_TRIGGER_X1));
+        assert_eq!(side_button_code("mouse_5"), Some(HYPER_TRIGGER_X2));
+        assert_eq!(side_button_code("thumb_01"), None);
     }
 
     #[test]
@@ -2836,6 +2984,10 @@ pub fn capture_helper_main() {
     );
 
     // 2. Initialize thread-local state for the LL hook callback
+    HELPER_CAPTURES_SIDE_BUTTONS.store(
+        registrations.iter().any(|reg| reg.button.is_some()),
+        Ordering::Relaxed,
+    );
     HELPER_REGISTRATIONS.with(|cell| *cell.borrow_mut() = registrations);
     HELPER_MODIFIERS.with(|cell| *cell.borrow_mut() = HelperModifierState::default());
     HELPER_SUPPRESSIONS.with(|cell| cell.borrow_mut().clear());
@@ -3073,7 +3225,7 @@ pub fn capture_helper_main() {
                 // Diagnose it from evidence instead: a live mouse hook sees every
                 // cursor move, so silence while the pointer moves — or after a
                 // probe — proves Windows removed it.
-                if HELPER_HYPER_TRIGGER.load(Ordering::Relaxed) != HYPER_TRIGGER_OFF {
+                if mouse_hook_wanted() {
                     if mouse_hook.is_null() {
                         // An install that failed at startup keeps retrying; the
                         // trigger is otherwise dead for the whole session.
@@ -3389,6 +3541,7 @@ fn spawn_capture_helper(
             modifiers_mask: r.modifiers_mask & MOD_MODIFIER_BITS,
             primary_vk: r.primary_vk,
             wheel: r.wheel,
+            button: r.button,
         })
         .collect();
 
@@ -4441,6 +4594,7 @@ mod helper_key_event_tests {
             modifiers_mask,
             primary_vk,
             wheel: None,
+            button: None,
         }
     }
 
@@ -5276,6 +5430,7 @@ mod edge_proptests {
             modifiers_mask,
             primary_vk,
             wheel: None,
+            button: None,
         }
     }
 
