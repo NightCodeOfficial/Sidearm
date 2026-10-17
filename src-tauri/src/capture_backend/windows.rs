@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
@@ -73,7 +73,9 @@ const VK_MASK_KEY: u16 = crate::vk::VK_MASK_KEY;
 
 /// dwExtraInfo marker for hook health probe events.  Distinct from
 /// `INTERNAL_SENDINPUT_EXTRA_INFO` so the hook callback can tell them apart.
-const HOOK_PROBE_EXTRA_INFO: usize = 0x4E41_4741_5052_4F42usize;
+/// Must fit in 32 bits for the same reason as that tag (a mouse LL hook sees
+/// only the low dword) — otherwise the mouse probe is never acknowledged.
+const HOOK_PROBE_EXTRA_INFO: usize = 0x4E41_4750usize; // "NAGP"
 
 /// VK used for probe injection (same unassigned key as the mask key).
 const VK_PROBE_KEY: u16 = 0xE8;
@@ -176,6 +178,16 @@ impl FactoryDefaultsDetector {
 /// Line pushed to the helper's stdout stream when the detector fires.
 const HELPER_ALERT_FACTORY_DEFAULTS: &str = "ALERT:factory-defaults";
 
+/// Prefix the helper puts on an encoded key that arrived while the Hypershift
+/// trigger was held (`HS:F13`, `HS:UP:F13`, `HS:REPEAT:F13`). The parent strips
+/// it and marks the event as hypershift-layer.
+const HS_PREFIX: &str = "HS:";
+
+/// Hook events the parent logs at `info` because they have no action dispatch
+/// to be inferred from. A translated Hypershift click is the case: the user
+/// sees a right click, and only this line says whether Sidearm produced it.
+const NOTE_PREFIX: &str = "NOTE:";
+
 thread_local! {
     static HELPER_REGISTRATIONS: std::cell::RefCell<Vec<HelperRegistration>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -195,7 +207,17 @@ thread_local! {
     /// Set to `true` by the hook callback on ANY invocation (real key or probe).
     /// Consumed (replaced with `false`) by the health monitor each cycle.
     /// When `true`, the hook is demonstrably alive — no probe needed.
+    ///
+    /// Keyboard-only on purpose: the mouse hook has its own flag, or a live mouse
+    /// hook would mask a dead keyboard hook on the fast path below.
     static HOOK_HAD_CALLBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set to `true` by the MOUSE hook callback on any invocation (including
+    /// moves).  Consumed by the mouse-hook health check, which has no probe to
+    /// fall back on: Windows drops `WH_MOUSE_LL` silently after a low-level-hook
+    /// timeout and never tells us, so silence has to be diagnosed from evidence.
+    static HOOK_HAD_MOUSE_CALLBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set to `true` by the mouse hook when it sees the tagged 1-px probe move.
+    static HELPER_MOUSE_PROBE_RECEIVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 
     /// Buffered modifier-down events waiting for an F-key match.
     /// If an F-key match arrives within the timeout, these were Razer encoding
@@ -251,12 +273,26 @@ impl HelperHandle {
     }
 }
 
+/// A scroll-wheel direction. The firmware never turns a scroll tick into a
+/// keystroke, so no registration can ever be matched by one — the mouse hook
+/// synthesises the hypershift-layer encoding itself (see [`wheel_capture_action`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum WheelAxis {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
 #[derive(Clone)]
 struct RegisteredHotkey {
     id: i32,
     encoded_key: String,
     modifiers_mask: u32,
     primary_vk: u32,
+    /// Set on the hypershift-layer scroll-wheel encodings.
+    wheel: Option<WheelAxis>,
 }
 
 /// IPC registration sent from the main process to the capture helper.
@@ -265,6 +301,10 @@ struct HelperRegistration {
     encoded_key: String,
     modifiers_mask: u32,
     primary_vk: u32,
+    /// Set on the hypershift-layer scroll-wheel encodings: that wheel direction
+    /// is captured while the trigger is held and emitted as `encoded_key`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wheel: Option<WheelAxis>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1112,15 +1152,12 @@ impl CaptureBackendHandle {
         // Spawn helper process for LL hook (handles superset modifier matching
         // for all keys, not just modifier-combos).  Non-fatal if fails —
         // RegisterHotKey still handles bare keys with exact matching.
-        let modifier_stale_gc_ms = config.settings.modifier_stale_gc_ms;
-        let replayed_modifier_force_release_ms = config.settings.replayed_modifier_force_release_ms;
         let helper = spawn_capture_helper(
             app.clone(),
             runtime_store.clone(),
             &registrations,
             helper_event_tx,
-            modifier_stale_gc_ms,
-            replayed_modifier_force_release_ms,
+            &config.settings,
             reader_helper_died,
         );
         if !registrations.is_empty()
@@ -1251,11 +1288,29 @@ fn build_hotkey_registrations(config: &AppConfig) -> Result<Vec<RegisteredHotkey
             )
         })?;
 
+        // A scroll wheel has no encoded key on the wire: the firmware only
+        // emits `F13`..`F24` for buttons. Its hypershift-layer binding is still
+        // stored as an encoder mapping (the legacy Synapse model, where Razer's
+        // own driver did the translation), so tag it here and let the mouse hook
+        // emit it while the trigger is held. Only capture a direction the user
+        // actually bound somewhere — otherwise the wheel must keep scrolling.
+        let wheel = (mapping.layer == crate::config::Layer::Hypershift)
+            .then(|| wheel_axis_for_control(mapping.control_id.as_str()))
+            .flatten()
+            .filter(|_| {
+                config.bindings.iter().any(|binding| {
+                    binding.enabled
+                        && binding.layer == crate::config::Layer::Hypershift
+                        && binding.control_id == mapping.control_id
+                })
+            });
+
         registrations.push(RegisteredHotkey {
             id: (index + 1) as i32,
             encoded_key: hotkey.canonical,
             modifiers_mask: register_hotkey_mask(&hotkey.modifiers),
             primary_vk: u32::from(hotkey.key.code),
+            wheel,
         });
     }
 
@@ -1282,6 +1337,15 @@ fn process_helper_key_event(
 ) -> (bool, bool, bool) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    };
+
+    // Stamped at capture time: the parent resolves the layer immediately, so a
+    // fast trigger release must not retro-classify a press already in flight.
+    // Read here (the hook path), never at dispatch time.
+    let hyper_prefix = if HELPER_HYPER_ACTIVE.load(Ordering::Relaxed) {
+        HS_PREFIX
+    } else {
+        ""
     };
 
     match msg {
@@ -1338,9 +1402,9 @@ fn process_helper_key_event(
                 // REPEAT: prefix to guard hold-mode and non-shortcut
                 // actions from re-firing.
                 if is_repeat {
-                    matches.push(format!("REPEAT:{}", winner.encoded_key));
+                    matches.push(format!("{hyper_prefix}REPEAT:{}", winner.encoded_key));
                 } else {
-                    matches.push(winner.encoded_key.clone());
+                    matches.push(format!("{hyper_prefix}{}", winner.encoded_key));
                 }
                 // Inject mask key only on first press — Alt/Win state
                 // is stable during repeats.
@@ -1355,7 +1419,7 @@ fn process_helper_key_event(
                 // Modifier-up — diagnostic logging is done by caller.
                 (false, true, false)
             } else if let Some(encoded_key) = suppressions.remove(&vk) {
-                matches.push(format!("UP:{encoded_key}"));
+                matches.push(format!("{hyper_prefix}UP:{encoded_key}"));
                 (true, true, false)
             } else {
                 (false, false, false)
@@ -1416,16 +1480,801 @@ unsafe fn inject_hook_probe() -> bool {
     inserted > 0
 }
 
+// ---------------------------------------------------------------------------
+// Software Hypershift (WH_MOUSE_LL)
+// ---------------------------------------------------------------------------
+//
+// The device stores two records per button but its firmware only ever emits the
+// standard layer (measured on hardware 2026-10-16: holding the right button and
+// pressing a thumb still emits `F13`..`F24`, never the layer-1 record). So
+// Hypershift cannot be read out of the mouse — it has to be *imposed*: while the
+// trigger button is held, a press belongs to the `hypershift` layer.
+//
+// The trigger button is a native mouse button (a button whose onboard record was
+// rewritten into a keystroke never reaches a mouse hook), so the trigger state
+// and the trigger's own suppression live in a mouse hook, and the keyboard hook
+// only *reads* that state to stamp the encoded keys it emits.
+
+/// No Hypershift trigger configured — no mouse hook is installed at all.
+const HYPER_TRIGGER_OFF: u8 = 0;
+const HYPER_TRIGGER_LEFT: u8 = 1;
+const HYPER_TRIGGER_RIGHT: u8 = 2;
+const HYPER_TRIGGER_MIDDLE: u8 = 3;
+/// XBUTTON1 / XBUTTON2 — "mouse 4" / "mouse 5".
+const HYPER_TRIGGER_X1: u8 = 4;
+const HYPER_TRIGGER_X2: u8 = 5;
+
+/// Maps `Settings.hypershift_trigger` (a control id) onto the wire code handed
+/// to the capture helper. Unknown or absent values disable the trigger.
+fn hypershift_trigger_code(control_id: &str) -> u8 {
+    match control_id.trim() {
+        "mouse_left" => HYPER_TRIGGER_LEFT,
+        "mouse_right" => HYPER_TRIGGER_RIGHT,
+        "wheel_click" => HYPER_TRIGGER_MIDDLE,
+        "mouse_4" => HYPER_TRIGGER_X1,
+        "mouse_5" => HYPER_TRIGGER_X2,
+        _ => HYPER_TRIGGER_OFF,
+    }
+}
+
+/// Maps a scroll-wheel control id onto the axis the mouse hook captures.
+fn wheel_axis_for_control(control_id: &str) -> Option<WheelAxis> {
+    match control_id.trim() {
+        "wheel_up" => Some(WheelAxis::Up),
+        "wheel_down" => Some(WheelAxis::Down),
+        "wheel_left" => Some(WheelAxis::Left),
+        "wheel_right" => Some(WheelAxis::Right),
+        _ => None,
+    }
+}
+
+/// Trigger the helper acts on (`HYPER_TRIGGER_OFF` = Hypershift disabled).
+static HELPER_HYPER_TRIGGER: AtomicU8 = AtomicU8::new(HYPER_TRIGGER_OFF);
+/// True while the trigger button is physically held. Written by the mouse hook,
+/// read by the keyboard hook when it stamps a matched key as hypershift-layer.
+static HELPER_HYPER_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// True between a left-down we translated into a right-down and its matching
+/// left-up, so the injected right click stays balanced even when the trigger is
+/// released first — an application must never be left with the right button
+/// stuck down. Deliberately *not* cleared on unhook: the matching left-up still
+/// arrives after a reinstall and must close the pair.
+static HELPER_LMB_TRANSLATED: AtomicBool = AtomicBool::new(false);
+
+/// Cursor movement (px) that proves a live mouse hook must have received events.
+/// Windows drops `WH_MOUSE_LL` silently once a callback exceeds
+/// `LowLevelHooksTimeout` and never reports it, so the health monitor has to
+/// infer death from evidence. Every cursor move reaches a live hook; a pointer
+/// that crossed this distance in a check cycle with no callback means the hook
+/// is gone.
+const MOUSE_HEALTH_MOVE_PX: i32 = 2;
+/// Consecutive trigger-held cycles with zero mouse callbacks before the health
+/// monitor spends a probe. Holding the trigger with the pointer parked is
+/// legitimate, so it takes two idle cycles (~10 s) before even asking.
+const MOUSE_HEALTH_HELD_CYCLES: u32 = 2;
+/// Consecutive failed mouse-hook probes before the hook is reinstalled.
+const MOUSE_PROBE_FAIL_THRESHOLD: u32 = 2;
+
+/// Queue of right-click injections requested by the mouse hook.
+///
+/// The hook callback must never call `SendInput` itself. Measured on Windows: a
+/// `SendInput` issued from inside a `WH_MOUSE_LL` callback blocks for the whole
+/// `LowLevelHooksTimeout` (~1000 ms), because the injected event has to travel
+/// the very hook chain whose thread is still inside the callback. Every other
+/// input event queues behind it, so the pointer freezes in ~1 s batches (two per
+/// translated click: down + up) until Windows silently drops the hook. The
+/// callback therefore only enqueues; a dedicated thread injects. A *passive*
+/// mouse hook costs that thread nothing (same measurement: 1–4 ms per event).
+static HYPER_INJECT_TX: OnceLock<mpsc::Sender<bool>> = OnceLock::new();
+/// Right-button injections enqueued but not yet performed. Drained before the
+/// helper exits, so a translated click can never leave the right button down.
+static HYPER_INJECT_PENDING: AtomicUsize = AtomicUsize::new(0);
+
+/// What the mouse hook must do with one button or wheel message. Keeping this a
+/// pure decision leaves the hook body free of Win32 calls beyond the
+/// injected-event check, and makes the translation logic unit-testable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HyperMouseAction {
+    /// Not ours — pass the event to the next hook.
+    Pass,
+    /// Swallow the trigger press/release and record the new held state.
+    SetTriggerHeld(bool),
+    /// Swallow the left button and enqueue a synthetic right-down.
+    InjectRightDown,
+    /// Swallow the left button and enqueue the balancing right-up.
+    InjectRightUp,
+    /// Swallow a scroll tick and emit the hypershift-layer encoding of that
+    /// wheel direction (the firmware can never produce it itself).
+    CaptureWheel(String),
+}
+
+/// Maps a button message onto `(trigger code, is_down)`. `None` for every
+/// message the Hypershift layer does not track (moves, wheel, …).
+fn mouse_button_code(msg: u32, mouse_data: u32) -> Option<(u8, bool)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+        WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON2,
+    };
+
+    Some(match msg {
+        WM_LBUTTONDOWN => (HYPER_TRIGGER_LEFT, true),
+        WM_LBUTTONUP => (HYPER_TRIGGER_LEFT, false),
+        WM_RBUTTONDOWN => (HYPER_TRIGGER_RIGHT, true),
+        WM_RBUTTONUP => (HYPER_TRIGGER_RIGHT, false),
+        WM_MBUTTONDOWN => (HYPER_TRIGGER_MIDDLE, true),
+        WM_MBUTTONUP => (HYPER_TRIGGER_MIDDLE, false),
+        // Both X messages carry the button in the high word of mouseData.
+        WM_XBUTTONDOWN | WM_XBUTTONUP => {
+            let which = (mouse_data >> 16) as u16;
+            let button = if which == XBUTTON2 {
+                HYPER_TRIGGER_X2
+            } else {
+                HYPER_TRIGGER_X1
+            };
+            (button, msg == WM_XBUTTONDOWN)
+        }
+        _ => return None,
+    })
+}
+
+/// Decides what one mouse button event means for the Hypershift layer.
+///
+/// Synapse semantics: the trigger button is a pure modifier (swallowed, only
+/// toggling the held state) and, while it is held, the left button becomes a
+/// right click. The pairing flag keeps a translated click balanced when the
+/// trigger is released before the left button.
+fn hyper_mouse_action(
+    trigger: u8,
+    button: u8,
+    is_down: bool,
+    trigger_held: bool,
+    lmb_translated: bool,
+) -> HyperMouseAction {
+    if button == trigger {
+        return HyperMouseAction::SetTriggerHeld(is_down);
+    }
+    if button != HYPER_TRIGGER_LEFT {
+        return HyperMouseAction::Pass;
+    }
+    if !is_down {
+        // Left-up: close the pair when the matching left-down was translated,
+        // even if the trigger was already released.
+        return if lmb_translated {
+            HyperMouseAction::InjectRightUp
+        } else {
+            HyperMouseAction::Pass
+        };
+    }
+    // Left-down becomes a right-down while the trigger is held. With the left
+    // button itself as the trigger there is nothing to translate.
+    if trigger != HYPER_TRIGGER_LEFT && trigger_held {
+        HyperMouseAction::InjectRightDown
+    } else {
+        HyperMouseAction::Pass
+    }
+}
+
+/// Wake the helper's message loop so `drain_helper_matches` flushes what the
+/// hooks buffered. LL hook callbacks are delivered as sent messages during
+/// dispatch and do not make the loop's own wait return, so a callback that
+/// produced output has to post this explicitly.
+fn wake_helper_loop() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+
+    const WM_APP: u32 = 0x8000;
+    HELPER_THREAD_ID.with(|cell| {
+        let tid = cell.get();
+        if tid != 0 {
+            unsafe { PostThreadMessageW(tid, WM_APP, 0, 0) };
+        }
+    });
+}
+
+/// Decides what one scroll-wheel message means while the Hypershift trigger is
+/// held: the encoded key of that direction's hypershift-layer registration, or
+/// `None` to leave the tick to the OS (native scrolling).
+///
+/// Measured on this device: the firmware never turns a scroll tick into a
+/// keystroke, so no registration can ever match one — `F13`..`F24` only ever
+/// describe buttons. An unstamped wheel event therefore always resolved to the
+/// standard layer, which is why wheel bindings on the hypershift layer (e.g.
+/// `Zoom In`) could never fire. The hook emits the encoding instead, and only
+/// for a direction the user actually bound: a wheel with no binding must keep
+/// scrolling.
+fn wheel_capture_action(
+    regs: &[HelperRegistration],
+    msg: u32,
+    mouse_data: u32,
+    trigger_held: bool,
+) -> Option<String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_MOUSEHWHEEL, WM_MOUSEWHEEL};
+
+    if !trigger_held {
+        return None;
+    }
+    let delta = ((mouse_data >> 16) & 0xFFFF) as u16 as i16;
+    if delta == 0 {
+        return None;
+    }
+    let axis = match msg {
+        WM_MOUSEWHEEL => {
+            if delta > 0 {
+                WheelAxis::Up
+            } else {
+                WheelAxis::Down
+            }
+        }
+        WM_MOUSEHWHEEL => {
+            if delta > 0 {
+                WheelAxis::Right
+            } else {
+                WheelAxis::Left
+            }
+        }
+        _ => return None,
+    };
+    regs.iter()
+        .find(|reg| reg.wheel == Some(axis))
+        .map(|reg| reg.encoded_key.clone())
+}
+
+/// Hand a right-button injection to the injector thread. Never blocks and never
+/// calls Win32, so it is safe inside the hook callback.
+fn queue_hyper_injection(down: bool) {
+    let Some(tx) = HYPER_INJECT_TX.get() else {
+        return;
+    };
+    HYPER_INJECT_PENDING.fetch_add(1, Ordering::AcqRel);
+    if tx.send(down).is_err() {
+        HYPER_INJECT_PENDING.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Spawn the thread that performs the mouse hook's right-button injections.
+/// Idempotent; call before installing the mouse hook so no callback misses it.
+fn start_hyper_injector() {
+    let (tx, rx) = mpsc::channel::<bool>();
+    if HYPER_INJECT_TX.set(tx).is_err() {
+        return;
+    }
+    let spawned = thread::Builder::new()
+        .name("hyper-inject".to_string())
+        .spawn(move || {
+            unsafe {
+                use windows_sys::Win32::System::Threading::{
+                    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+                };
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+            }
+            while let Ok(down) = rx.recv() {
+                unsafe { inject_right_button(down) };
+                HYPER_INJECT_PENDING.fetch_sub(1, Ordering::AcqRel);
+            }
+        });
+    if spawned.is_err() {
+        log::error!("[capture-helper] Failed to spawn the Hypershift injector thread.");
+    }
+}
+
+/// Wait (bounded) for queued right-button injections to finish, so an exiting
+/// helper cannot strand the right button in the down state.
+fn drain_pending_hyper_injections(budget: std::time::Duration) {
+    let deadline = std::time::Instant::now() + budget;
+    while HYPER_INJECT_PENDING.load(Ordering::Acquire) > 0
+        && std::time::Instant::now() < deadline
+    {
+        thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// Send one synthetic right-button event carrying
+/// [`crate::input_synthesis::INTERNAL_SENDINPUT_EXTRA_INFO`] so our own mouse
+/// hook passes it through instead of translating it again.
+///
+/// Runs on the injector thread only — never inside a hook callback (see
+/// [`HYPER_INJECT_TX`]).
+unsafe fn inject_right_button(down: bool) {
+    use std::mem::size_of;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, SendInput,
+    };
+
+    let flags = if down {
+        MOUSEEVENTF_RIGHTDOWN
+    } else {
+        MOUSEEVENTF_RIGHTUP
+    };
+    let input = crate::input_synthesis::make_mouse_input(flags, 0);
+    unsafe {
+        SendInput(
+            1,
+            &input,
+            size_of::<windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT>() as i32,
+        );
+    }
+}
+
+/// LL mouse hook callback for the capture helper process. Installed only while a
+/// Hypershift trigger is configured.
+///
+/// Three jobs, all inside the ~200–300 ms LL-hook budget:
+///  - the trigger button is swallowed and only toggles [`HELPER_HYPER_ACTIVE`]
+///    (Synapse semantics: that button is the Hypershift modifier, not a click);
+///  - while the trigger is held, the left button becomes a right click — queued
+///    for the injector thread, never injected from here (see [`HYPER_INJECT_TX`]);
+///  - it reports liveness to the health monitor, which is the only way to notice
+///    that Windows silently removed the hook.
+///
+/// Everything else — mouse moves, wheel, our own injections — returns
+/// `CallNextHookEx` untouched, so the per-move cost is one flag store.
+unsafe extern "system" fn helper_ll_mouse_proc(code: i32, w_param: usize, l_param: isize) -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, MSLLHOOKSTRUCT, WM_MOUSEMOVE,
+    };
+
+    let pass_through = || unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) };
+
+    if code < 0 {
+        return pass_through();
+    }
+    let msg = w_param as u32;
+
+    // Liveness evidence for the health monitor — set before any bail-out so that
+    // ordinary moves count. This is the only signal able to detect Windows
+    // dropping the hook after a low-level-hook timeout.
+    HOOK_HAD_MOUSE_CALLBACK.with(|cell| cell.set(true));
+
+    let ms = unsafe { &*(l_param as *const MSLLHOOKSTRUCT) };
+    if msg == WM_MOUSEMOVE {
+        // Health-monitor probe (a tagged 1-px nudge) — acknowledge it; the move
+        // itself passes through untouched.
+        if ms.dwExtraInfo == HOOK_PROBE_EXTRA_INFO {
+            HELPER_MOUSE_PROBE_RECEIVED.with(|cell| cell.set(true));
+        }
+        return pass_through();
+    }
+
+    // A panic unwinding across this `extern "system"` boundary is UB — contain it
+    // and fall through to CallNextHookEx (never suppress on a panic).
+    let action = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let trigger = HELPER_HYPER_TRIGGER.load(Ordering::Relaxed);
+        if trigger == HYPER_TRIGGER_OFF {
+            return HyperMouseAction::Pass;
+        }
+        if ms.dwExtraInfo == crate::input_synthesis::INTERNAL_SENDINPUT_EXTRA_INFO {
+            // Our own synthetic right click / Ctrl+wheel — pass it through.
+            return HyperMouseAction::Pass;
+        }
+        let trigger_held = HELPER_HYPER_ACTIVE.load(Ordering::Relaxed);
+        if let Some(encoded_key) = HELPER_REGISTRATIONS
+            .with(|cell| wheel_capture_action(&cell.borrow(), msg, ms.mouseData, trigger_held))
+        {
+            return HyperMouseAction::CaptureWheel(encoded_key);
+        }
+        let Some((button, is_down)) = mouse_button_code(msg, ms.mouseData) else {
+            return HyperMouseAction::Pass;
+        };
+        hyper_mouse_action(
+            trigger,
+            button,
+            is_down,
+            trigger_held,
+            HELPER_LMB_TRANSLATED.load(Ordering::Relaxed),
+        )
+    }))
+    .unwrap_or(HyperMouseAction::Pass);
+
+    // The trigger press/release and both halves of the translated click are
+    // swallowed; the actual right-click injection happens on the injector thread.
+    match action {
+        HyperMouseAction::Pass => pass_through(),
+        HyperMouseAction::SetTriggerHeld(held) => {
+            HELPER_HYPER_ACTIVE.store(held, Ordering::Relaxed);
+            1
+        }
+        HyperMouseAction::InjectRightDown => {
+            HELPER_LMB_TRANSLATED.store(true, Ordering::Relaxed);
+            HELPER_MATCHES.with(|cell| {
+                cell.borrow_mut().push(format!(
+                    "{NOTE_PREFIX}Hypershift click: left button -> right click (trigger held)"
+                ));
+            });
+            wake_helper_loop();
+            queue_hyper_injection(true);
+            1
+        }
+        HyperMouseAction::InjectRightUp => {
+            HELPER_LMB_TRANSLATED.store(false, Ordering::Relaxed);
+            queue_hyper_injection(false);
+            1
+        }
+        HyperMouseAction::CaptureWheel(encoded_key) => {
+            HELPER_MATCHES.with(|cell| {
+                let mut matches = cell.borrow_mut();
+                // A wheel tick has no release of its own: emit the balancing
+                // key-up too, so a hold-mode action cannot stick.
+                matches.push(format!("{HS_PREFIX}{encoded_key}"));
+                matches.push(format!("{HS_PREFIX}UP:{encoded_key}"));
+                matches.push(format!("DEBUG:hypershift-wheel key={encoded_key}"));
+            });
+            wake_helper_loop();
+            1
+        }
+    }
+}
+
+/// Install the LL mouse hook — only when a Hypershift trigger is configured.
+/// Returns a null handle when Hypershift is off or the install failed (the
+/// trigger then simply stays inactive; capture keeps working, and the health
+/// monitor retries the install on later cycles).
+unsafe fn install_mouse_hook(
+    hmod: windows_sys::Win32::Foundation::HMODULE,
+) -> windows_sys::Win32::UI::WindowsAndMessaging::HHOOK {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_MOUSE_LL};
+
+    if HELPER_HYPER_TRIGGER.load(Ordering::Relaxed) == HYPER_TRIGGER_OFF {
+        return std::ptr::null_mut();
+    }
+    let handle = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(helper_ll_mouse_proc), hmod, 0) };
+    if handle.is_null() {
+        log::warn!(
+            "[capture-helper] SetWindowsHookExW(WH_MOUSE_LL) failed: {} — Hypershift trigger disabled.",
+            std::io::Error::last_os_error()
+        );
+    } else {
+        log::info!("[capture-helper] LL mouse hook installed (Hypershift trigger code {}).", HELPER_HYPER_TRIGGER.load(Ordering::Relaxed));
+    }
+    handle
+}
+
+/// Verdict of one health cycle for the mouse hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MouseHookHealth {
+    /// Callback seen (or no evidence of trouble) — leave the hook alone.
+    Alive,
+    /// Nothing proves the hook is alive: spend a probe to find out.
+    Probe,
+    /// The hook must be dead: reinstall it.
+    Dead,
+}
+
+/// Decides what the health monitor must do about the mouse hook.
+///
+/// `callback_seen` — the hook saw any mouse message this cycle (or the previous
+/// probe was acknowledged); `cursor_moved` — the pointer crossed
+/// [`MOUSE_HEALTH_MOVE_PX`] since the last cycle; `probe_pending` — a probe was
+/// injected last cycle and not yet acknowledged; `held_cycles` — consecutive
+/// cycles with the trigger held and no callback.
+fn mouse_hook_health(
+    callback_seen: bool,
+    cursor_moved: bool,
+    probe_pending: bool,
+    held_cycles: u32,
+) -> MouseHookHealth {
+    if callback_seen {
+        return MouseHookHealth::Alive;
+    }
+    if probe_pending {
+        // A probe that was injected a full cycle ago and never came back.
+        return MouseHookHealth::Dead;
+    }
+    if cursor_moved {
+        // A live hook sees every move; silence while the pointer is moving is
+        // proof that Windows removed it.
+        return MouseHookHealth::Dead;
+    }
+    if held_cycles >= MOUSE_HEALTH_HELD_CYCLES {
+        return MouseHookHealth::Probe;
+    }
+    MouseHookHealth::Alive
+}
+
+/// Current cursor position in screen coordinates, or `None` if the query failed.
+fn current_cursor_pos() -> Option<(i32, i32)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut point = POINT { x: 0, y: 0 };
+    if unsafe { GetCursorPos(&mut point) } != 0 {
+        Some((point.x, point.y))
+    } else {
+        None
+    }
+}
+
+/// Inject the mouse-hook liveness probe: a 1-px nudge that returns immediately.
+///
+/// A move is the only mouse event guaranteed to travel the LL hook chain, and a
+/// 1-px round trip is invisible to the user. The probe carries
+/// [`HOOK_PROBE_EXTRA_INFO`] (not [`crate::input_synthesis::INTERNAL_SENDINPUT_EXTRA_INFO`])
+/// so the hook can tell it apart; it stays a move, which the hook passes
+/// through, so the tag can never be mistaken for a real button press.
+/// Returns `false` when the OS refused the injection (UIPI, no input desktop),
+/// in which case the cycle draws no conclusion.
+unsafe fn inject_mouse_hook_probe() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_MOVE;
+
+    let inputs: Vec<_> = [1, -1]
+        .into_iter()
+        .map(|dx| {
+            let mut input = crate::input_synthesis::make_mouse_input(MOUSEEVENTF_MOVE, 0);
+            input.Anonymous.mi.dx = dx;
+            input.Anonymous.mi.dwExtraInfo = HOOK_PROBE_EXTRA_INFO;
+            input
+        })
+        .collect();
+    send_inputs(&inputs) > 0
+}
+
+/// Unhook the LL mouse hook and clear the held state, so a reinstall can never
+/// leave the trigger stuck as "held".
+unsafe fn unhook_mouse_hook(handle: &mut windows_sys::Win32::UI::WindowsAndMessaging::HHOOK) {
+    unsafe {
+        if !handle.is_null() {
+            use windows_sys::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx;
+            UnhookWindowsHookEx(*handle);
+            *handle = std::ptr::null_mut();
+        }
+    }
+    HELPER_HYPER_ACTIVE.store(false, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod mouse_hook_tests {
+    use super::{
+        HYPER_TRIGGER_LEFT, HYPER_TRIGGER_MIDDLE, HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_X1,
+        HYPER_TRIGGER_X2, HelperRegistration, HyperMouseAction, MOUSE_HEALTH_HELD_CYCLES,
+        MouseHookHealth, WheelAxis, hyper_mouse_action, mouse_button_code, mouse_hook_health,
+        wheel_axis_for_control, wheel_capture_action,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_RBUTTONDOWN,
+        WM_RBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1, XBUTTON2,
+    };
+
+    /// One wheel tick, as the high word of `mouseData` carries it.
+    fn tick(delta: i16) -> u32 {
+        (delta as u16 as u32) << 16
+    }
+
+    fn wheel_reg(encoded_key: &str, axis: WheelAxis) -> HelperRegistration {
+        HelperRegistration {
+            encoded_key: encoded_key.into(),
+            modifiers_mask: 0,
+            primary_vk: 0,
+            wheel: Some(axis),
+        }
+    }
+
+    /// The trigger button is a pure modifier: swallowed, never clicked.
+    #[test]
+    fn trigger_press_and_release_only_toggle_the_held_state() {
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_RIGHT, true, false, false),
+            HyperMouseAction::SetTriggerHeld(true),
+        );
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_RIGHT, false, true, false),
+            HyperMouseAction::SetTriggerHeld(false),
+        );
+    }
+
+    /// Only the trigger and the left button are ever swallowed.
+    #[test]
+    fn other_buttons_always_pass_through() {
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_MIDDLE, true, true, false),
+            HyperMouseAction::Pass,
+        );
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_X1, true, true, false),
+            HyperMouseAction::Pass,
+        );
+    }
+
+    /// Synapse behaviour: trigger held + left click = right click.
+    #[test]
+    fn left_click_becomes_a_right_click_while_the_trigger_is_held() {
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_LEFT, true, true, false),
+            HyperMouseAction::InjectRightDown,
+        );
+    }
+
+    /// A left click without the trigger stays a left click.
+    #[test]
+    fn left_click_passes_through_without_the_trigger() {
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_LEFT, true, false, false),
+            HyperMouseAction::Pass,
+        );
+    }
+
+    /// Left button as the trigger: the button *is* the modifier, so nothing to
+    /// translate — and its own press must not click.
+    #[test]
+    fn left_trigger_never_translates_itself() {
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_LEFT, HYPER_TRIGGER_LEFT, true, true, false),
+            HyperMouseAction::SetTriggerHeld(true),
+        );
+    }
+
+    /// Releasing the trigger before the left button must still close the pair,
+    /// or the application is left with a stuck right button.
+    #[test]
+    fn translated_click_stays_balanced_when_the_trigger_is_released_first() {
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_LEFT, true, true, false),
+            HyperMouseAction::InjectRightDown,
+        );
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_RIGHT, false, true, false),
+            HyperMouseAction::SetTriggerHeld(false),
+        );
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_LEFT, false, false, true),
+            HyperMouseAction::InjectRightUp,
+        );
+    }
+
+    /// An untranslated left-up must not inject a stray right-up.
+    #[test]
+    fn untranslated_left_up_passes_through() {
+        assert_eq!(
+            hyper_mouse_action(HYPER_TRIGGER_RIGHT, HYPER_TRIGGER_LEFT, false, true, false),
+            HyperMouseAction::Pass,
+        );
+    }
+
+    #[test]
+    fn button_messages_map_to_the_trigger_codes() {
+        assert_eq!(
+            mouse_button_code(WM_RBUTTONDOWN, 0),
+            Some((HYPER_TRIGGER_RIGHT, true))
+        );
+        assert_eq!(
+            mouse_button_code(WM_RBUTTONUP, 0),
+            Some((HYPER_TRIGGER_RIGHT, false))
+        );
+        assert_eq!(
+            mouse_button_code(WM_LBUTTONDOWN, 0),
+            Some((HYPER_TRIGGER_LEFT, true))
+        );
+        assert_eq!(
+            mouse_button_code(WM_LBUTTONUP, 0),
+            Some((HYPER_TRIGGER_LEFT, false))
+        );
+        // mouse 4 / mouse 5: the button lives in the high word of mouseData.
+        assert_eq!(
+            mouse_button_code(WM_XBUTTONDOWN, u32::from(XBUTTON1) << 16),
+            Some((HYPER_TRIGGER_X1, true))
+        );
+        assert_eq!(
+            mouse_button_code(WM_XBUTTONUP, u32::from(XBUTTON2) << 16),
+            Some((HYPER_TRIGGER_X2, false))
+        );
+        assert_eq!(mouse_button_code(WM_MOUSEMOVE, 0), None);
+    }
+
+    /// Any callback proves the hook is installed.
+    #[test]
+    fn a_callback_means_the_mouse_hook_is_alive() {
+        assert_eq!(
+            mouse_hook_health(true, false, true, MOUSE_HEALTH_HELD_CYCLES),
+            MouseHookHealth::Alive,
+        );
+    }
+
+    /// The pointer moved and the hook stayed silent: Windows removed it.
+    #[test]
+    fn silence_while_the_pointer_moves_means_dead() {
+        assert_eq!(mouse_hook_health(false, true, false, 0), MouseHookHealth::Dead,);
+    }
+
+    /// An unanswered probe condemns the hook even with a parked pointer.
+    #[test]
+    fn unanswered_probe_means_dead() {
+        assert_eq!(mouse_hook_health(false, false, true, 0), MouseHookHealth::Dead,);
+    }
+
+    /// Holding the trigger with the mouse parked is legitimate for a while —
+    /// the probe only goes out after the grace cycles.
+    #[test]
+    fn parked_pointer_probes_only_after_the_grace_cycles() {
+        assert_eq!(
+            mouse_hook_health(false, false, false, 1),
+            MouseHookHealth::Alive,
+        );
+        assert_eq!(
+            mouse_hook_health(false, false, false, MOUSE_HEALTH_HELD_CYCLES),
+            MouseHookHealth::Probe,
+        );
+    }
+
+    /// The firmware never turns a scroll tick into a keystroke, so the hook has
+    /// to emit the hypershift-layer encoding itself.
+    #[test]
+    fn wheel_tick_emits_the_hypershift_encoding_while_the_trigger_is_held() {
+        let regs = vec![
+            wheel_reg("Ctrl+Alt+F16", WheelAxis::Up),
+            wheel_reg("Ctrl+Alt+F17", WheelAxis::Down),
+        ];
+        assert_eq!(
+            wheel_capture_action(&regs, WM_MOUSEWHEEL, tick(120), true).as_deref(),
+            Some("Ctrl+Alt+F16"),
+        );
+        assert_eq!(
+            wheel_capture_action(&regs, WM_MOUSEWHEEL, tick(-120), true).as_deref(),
+            Some("Ctrl+Alt+F17"),
+        );
+    }
+
+    /// Without the trigger the wheel must stay native scrolling.
+    #[test]
+    fn wheel_tick_passes_through_without_the_trigger() {
+        let regs = vec![wheel_reg("Ctrl+Alt+F16", WheelAxis::Up)];
+        assert_eq!(
+            wheel_capture_action(&regs, WM_MOUSEWHEEL, tick(120), false),
+            None,
+        );
+    }
+
+    /// A direction the user never bound must keep scrolling, and a message that
+    /// is not a wheel tick (or carries a zero delta) is never captured.
+    #[test]
+    fn unbound_wheel_direction_is_left_to_the_os() {
+        let regs = vec![wheel_reg("Ctrl+Alt+F16", WheelAxis::Up)];
+        assert_eq!(
+            wheel_capture_action(&regs, WM_MOUSEWHEEL, tick(-120), true),
+            None,
+        );
+        assert_eq!(
+            wheel_capture_action(&regs, WM_MOUSEHWHEEL, tick(120), true),
+            None,
+        );
+        assert_eq!(wheel_capture_action(&regs, WM_MOUSEMOVE, 0, true), None);
+        assert_eq!(
+            wheel_capture_action(&regs, WM_MOUSEWHEEL, tick(0), true),
+            None,
+        );
+    }
+
+    /// The tilt wheel maps on its own axis (right = away, left = toward).
+    #[test]
+    fn horizontal_wheel_uses_the_tilt_axis() {
+        let regs = vec![
+            wheel_reg("Shift+Alt+F16", WheelAxis::Right),
+            wheel_reg("Shift+Alt+F17", WheelAxis::Left),
+        ];
+        assert_eq!(
+            wheel_capture_action(&regs, WM_MOUSEHWHEEL, tick(120), true).as_deref(),
+            Some("Shift+Alt+F16"),
+        );
+        assert_eq!(
+            wheel_capture_action(&regs, WM_MOUSEHWHEEL, tick(-120), true).as_deref(),
+            Some("Shift+Alt+F17"),
+        );
+    }
+
+    #[test]
+    fn wheel_controls_map_to_their_axis() {
+        assert_eq!(wheel_axis_for_control("wheel_up"), Some(WheelAxis::Up));
+        assert_eq!(wheel_axis_for_control("wheel_down"), Some(WheelAxis::Down));
+        assert_eq!(wheel_axis_for_control("wheel_left"), Some(WheelAxis::Left));
+        assert_eq!(wheel_axis_for_control("wheel_right"), Some(WheelAxis::Right));
+        assert_eq!(wheel_axis_for_control("wheel_click"), None);
+        assert_eq!(wheel_axis_for_control("thumb_01"), None);
+        // Whitespace in a user-edited config must not defeat the match.
+        assert_eq!(wheel_axis_for_control(" wheel_up "), Some(WheelAxis::Up));
+    }
+}
+
 /// LL keyboard hook callback for the capture helper process.
 /// Matches modifier+F-key combos and buffers the encoded key in HELPER_MATCHES.
-unsafe extern "system" fn helper_ll_keyboard_proc(
-    code: i32,
-    w_param: usize,
-    l_param: isize,
-) -> isize {
+unsafe extern "system" fn helper_ll_keyboard_proc(code: i32, w_param: usize, l_param: isize) -> isize {
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            CallNextHookEx, KBDLLHOOKSTRUCT, PostThreadMessageW,
+            CallNextHookEx, KBDLLHOOKSTRUCT,
         };
 
         // A panic unwinding across this `extern "system"` boundary is UB. Contain any
@@ -1491,13 +2340,7 @@ unsafe extern "system" fn helper_ll_keyboard_proc(
             // For our own injections, only log (above) — skip state update and
             // let the event pass through to the OS.
             // Wake the message pump so the DEBUG line flushes promptly to parent.
-            const WM_APP: u32 = 0x8000;
-            HELPER_THREAD_ID.with(|cell| {
-                let tid = cell.get();
-                if tid != 0 {
-                    PostThreadMessageW(tid, WM_APP, 0, 0);
-                }
-            });
+            wake_helper_loop();
             return false;
         }
 
@@ -1862,13 +2705,7 @@ unsafe extern "system" fn helper_ll_keyboard_proc(
         // via sent-message delivery during GetMessageW, which does NOT cause
         // GetMessageW to return on its own.
         if wake {
-            const WM_APP: u32 = 0x8000;
-            HELPER_THREAD_ID.with(|cell| {
-                let tid = cell.get();
-                if tid != 0 {
-                    PostThreadMessageW(tid, WM_APP, 0, 0);
-                }
-            });
+            wake_helper_loop();
         }
 
         if suppress {
@@ -1931,6 +2768,9 @@ pub fn capture_helper_main() {
         modifier_stale_gc_ms: Option<u64>,
         #[serde(default)]
         replayed_modifier_force_release_ms: Option<u64>,
+        /// `Settings.hypershift_trigger` (a control id). Absent = Hypershift off.
+        #[serde(default)]
+        hypershift_trigger: Option<String>,
     }
 
     let init: HelperInit = match serde_json::from_str::<HelperInit>(line.trim()) {
@@ -1942,6 +2782,7 @@ pub fn capture_helper_main() {
                     registrations: regs,
                     modifier_stale_gc_ms: None,
                     replayed_modifier_force_release_ms: None,
+                    hypershift_trigger: None,
                 },
                 Err(e) => {
                     log::error!("[capture-helper] Failed to parse init payload: {e}");
@@ -1955,7 +2796,18 @@ pub fn capture_helper_main() {
         registrations,
         modifier_stale_gc_ms,
         replayed_modifier_force_release_ms,
+        hypershift_trigger,
     } = init;
+
+    // Software Hypershift: resolved to a wire code once here, then read by both
+    // hooks (keyboard stamps the layer, mouse swallows/translates the buttons).
+    HELPER_HYPER_TRIGGER.store(
+        hypershift_trigger
+            .as_deref()
+            .map(hypershift_trigger_code)
+            .unwrap_or(HYPER_TRIGGER_OFF),
+        Ordering::Relaxed,
+    );
 
     if let Some(ms) = modifier_stale_gc_ms {
         let clamped = ms.clamp(500, 30_000);
@@ -2016,6 +2868,14 @@ pub fn capture_helper_main() {
     }
     log::info!("[capture-helper] LL keyboard hook installed successfully.");
 
+    // 3b. Install WH_MOUSE_LL when a Hypershift trigger is configured — it owns
+    //     the trigger button's suppression and the LMB→RMB translation.  The
+    //     injector thread must exist first: the hook callback only *queues* the
+    //     right-click (injecting from inside the callback stalls input for a full
+    //     LowLevelHooksTimeout — see HYPER_INJECT_TX).
+    start_hyper_injector();
+    let mut mouse_hook = unsafe { install_mouse_hook(hmod) };
+
     // 4. Spawn stdin watcher — reads commands from parent.
     //    "REHOOK" → reinstall LL hook (WM_APP + 1)
     //    stdin close → exit (WM_QUIT)
@@ -2062,6 +2922,13 @@ pub fn capture_helper_main() {
     let mut probe_sent = false;
     let mut consecutive_probe_failures: u32 = 0;
     let mut hook_reinstall_count: u32 = 0;
+    // Mouse-hook health (see `mouse_hook_health`): the mouse hook can be dropped
+    // by Windows without affecting the keyboard hook, so it gets its own state.
+    let mut mouse_probe_sent = false;
+    let mut mouse_probe_failures: u32 = 0;
+    let mut mouse_held_cycles: u32 = 0;
+    let mut mouse_reinstall_count: u32 = 0;
+    let mut last_mouse_pos = current_cursor_pos();
 
     loop {
         // Compute wait timeout: if we have pending modifiers, wake up in
@@ -2160,6 +3027,7 @@ pub fn capture_helper_main() {
                             unsafe {
                                 UnhookWindowsHookEx(hook);
                             }
+                            unsafe { unhook_mouse_hook(&mut mouse_hook); }
                             let new_hook = unsafe {
                                 SetWindowsHookExW(
                                     WH_KEYBOARD_LL,
@@ -2176,6 +3044,7 @@ pub fn capture_helper_main() {
                                 break;
                             }
                             hook = new_hook;
+                            mouse_hook = unsafe { install_mouse_hook(hmod) };
                             hook_reinstall_count += 1;
                             log::info!(
                                 "[capture-helper] Hook reinstalled successfully \
@@ -2194,6 +3063,85 @@ pub fn capture_helper_main() {
                     probe_sent = unsafe { inject_hook_probe() };
                     if probe_sent {
                         HELPER_PROBE_RECEIVED.with(|cell| cell.set(false));
+                    }
+                }
+
+                // Mouse hook: same silent removal, but worse — the keyboard probe
+                // only reports a dead *keyboard* hook, so a dropped mouse hook
+                // would otherwise stay gone for the rest of the session (the
+                // trigger button silently turns into a plain right click).
+                // Diagnose it from evidence instead: a live mouse hook sees every
+                // cursor move, so silence while the pointer moves — or after a
+                // probe — proves Windows removed it.
+                if HELPER_HYPER_TRIGGER.load(Ordering::Relaxed) != HYPER_TRIGGER_OFF {
+                    if mouse_hook.is_null() {
+                        // An install that failed at startup keeps retrying; the
+                        // trigger is otherwise dead for the whole session.
+                        mouse_hook = unsafe { install_mouse_hook(hmod) };
+                    }
+                    if !mouse_hook.is_null() {
+                        let callback_seen =
+                            HOOK_HAD_MOUSE_CALLBACK.with(|cell| cell.replace(false));
+                        let probe_received =
+                            HELPER_MOUSE_PROBE_RECEIVED.with(|cell| cell.replace(false));
+                        let cursor_now = current_cursor_pos();
+                        let cursor_moved = matches!(
+                            (cursor_now, last_mouse_pos),
+                            (Some(now), Some(prev))
+                                if (now.0 - prev.0).abs() >= MOUSE_HEALTH_MOVE_PX
+                                    || (now.1 - prev.1).abs() >= MOUSE_HEALTH_MOVE_PX
+                        );
+                        if cursor_now.is_some() {
+                            last_mouse_pos = cursor_now;
+                        }
+                        if callback_seen {
+                            mouse_held_cycles = 0;
+                        } else if HELPER_HYPER_ACTIVE.load(Ordering::Relaxed) {
+                            // Holding the trigger with the pointer parked is
+                            // legitimate — count cycles before probing.
+                            mouse_held_cycles += 1;
+                        } else {
+                            mouse_held_cycles = 0;
+                        }
+
+                        match mouse_hook_health(
+                            callback_seen || probe_received,
+                            cursor_moved,
+                            mouse_probe_sent,
+                            mouse_held_cycles,
+                        ) {
+                            MouseHookHealth::Alive => {
+                                mouse_probe_sent = false;
+                                mouse_probe_failures = 0;
+                            }
+                            MouseHookHealth::Probe => {
+                                mouse_probe_sent = unsafe { inject_mouse_hook_probe() };
+                                if mouse_probe_sent {
+                                    HELPER_MOUSE_PROBE_RECEIVED.with(|cell| cell.set(false));
+                                }
+                            }
+                            MouseHookHealth::Dead => {
+                                mouse_probe_sent = false;
+                                mouse_probe_failures += 1;
+                                if mouse_probe_failures >= MOUSE_PROBE_FAIL_THRESHOLD {
+                                    log::warn!(
+                                        "[capture-helper] LL mouse hook stopped receiving \
+                                     events ({mouse_probe_failures} consecutive cycles) — \
+                                     Windows removed it.  Reinstalling WH_MOUSE_LL..."
+                                    );
+                                    unsafe { unhook_mouse_hook(&mut mouse_hook); }
+                                    mouse_hook = unsafe { install_mouse_hook(hmod) };
+                                    mouse_reinstall_count += 1;
+                                    mouse_probe_failures = 0;
+                                    mouse_held_cycles = 0;
+                                    last_mouse_pos = current_cursor_pos();
+                                    log::info!(
+                                        "[capture-helper] Mouse hook reinstalled \
+                                     (total mouse reinstalls: {mouse_reinstall_count})."
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             } // was_health_timeout
@@ -2218,8 +3166,9 @@ pub fn capture_helper_main() {
                 unsafe {
                     UnhookWindowsHookEx(hook);
                 }
+                unsafe { unhook_mouse_hook(&mut mouse_hook); }
                 log::info!("[capture-helper] Hook uninstalled, exiting.");
-                return;
+                break;
             }
             if m.message == WM_REHOOK {
                 log::info!("[capture-helper] REHOOK: reinstalling WH_KEYBOARD_LL...");
@@ -2229,6 +3178,7 @@ pub fn capture_helper_main() {
                 unsafe {
                     UnhookWindowsHookEx(hook);
                 }
+                unsafe { unhook_mouse_hook(&mut mouse_hook); }
                 // Reset all modifier-tracking state.  Any events in flight
                 // when the old hook was uninstalled are stale — their
                 // matching up/down may have been dropped.  Better to start
@@ -2248,8 +3198,13 @@ pub fn capture_helper_main() {
                     break;
                 }
                 hook = new_hook;
+                mouse_hook = unsafe { install_mouse_hook(hmod) };
                 hook_reinstall_count += 1;
                 probe_sent = false;
+                mouse_probe_sent = false;
+                mouse_probe_failures = 0;
+                mouse_held_cycles = 0;
+                last_mouse_pos = current_cursor_pos();
                 log::info!(
                     "[capture-helper] Hook reinstalled via REHOOK \
                      (total reinstalls: {hook_reinstall_count})."
@@ -2263,6 +3218,7 @@ pub fn capture_helper_main() {
                 unsafe {
                     UnhookWindowsHookEx(hook);
                 }
+                unsafe { unhook_mouse_hook(&mut mouse_hook); }
                 break;
             }
 
@@ -2277,6 +3233,7 @@ pub fn capture_helper_main() {
                 unsafe {
                     UnhookWindowsHookEx(hook);
                 }
+                unsafe { unhook_mouse_hook(&mut mouse_hook); }
                 break;
             }
         }
@@ -2301,6 +3258,7 @@ pub fn capture_helper_main() {
             unsafe {
                 UnhookWindowsHookEx(hook);
             }
+            unsafe { unhook_mouse_hook(&mut mouse_hook); }
             break;
         }
 
@@ -2316,6 +3274,9 @@ pub fn capture_helper_main() {
     }
 
     // 6. Cleanup (reached only on reinstall failure)
+    // Let a queued right-click finish before the process goes away: exiting with
+    // a pending right-up still queued would leave the button down at OS level.
+    drain_pending_hyper_injections(std::time::Duration::from_millis(300));
     log::info!("[capture-helper] Exiting message pump.");
 }
 
@@ -2405,8 +3366,7 @@ fn spawn_capture_helper(
     runtime_store: Arc<Mutex<RuntimeStore>>,
     registrations: &[RegisteredHotkey],
     event_tx: mpsc::SyncSender<EncodedKeyEvent>,
-    modifier_stale_gc_ms: Option<u64>,
-    replayed_modifier_force_release_ms: Option<u64>,
+    settings: &crate::config::Settings,
     helper_died: Arc<AtomicBool>,
 ) -> Option<HelperHandle> {
     use std::io::Write;
@@ -2428,6 +3388,7 @@ fn spawn_capture_helper(
             // no meaning for the LL hook's superset modifier matching.
             modifiers_mask: r.modifiers_mask & MOD_MODIFIER_BITS,
             primary_vk: r.primary_vk,
+            wheel: r.wheel,
         })
         .collect();
 
@@ -2447,7 +3408,7 @@ fn spawn_capture_helper(
         .arg("--capture-helper")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
     {
@@ -2475,6 +3436,30 @@ fn spawn_capture_helper(
         }
     };
 
+    // Helper diagnostics: the helper's stderr used to be inherited — i.e. lost,
+    // in a windowed app — so hook reinstalls, probe failures and panics never
+    // reached Sidearm.log.  Exactly those events have to be visible after the
+    // fact (a silently dropped LL hook explains "the trigger stopped working"),
+    // so pipe the helper's stderr into the parent log.
+    if let Some(stderr_pipe) = child.stderr.take() {
+        thread::spawn(move || {
+            use std::io::BufRead;
+
+            let reader = std::io::BufReader::new(stderr_pipe);
+            for line in reader.lines().map_while(Result::ok) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.contains("ERROR") || trimmed.contains("WARN") {
+                    log::warn!("[helper] {trimmed}");
+                } else {
+                    log::info!("[helper] {trimmed}");
+                }
+            }
+        });
+    }
+
     // Write init payload as one JSON line to the helper's stdin.
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -2484,11 +3469,13 @@ fn spawn_capture_helper(
         modifier_stale_gc_ms: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         replayed_modifier_force_release_ms: Option<u64>,
+        hypershift_trigger: &'a str,
     }
     let init = HelperInit {
         registrations: &helper_regs,
-        modifier_stale_gc_ms,
-        replayed_modifier_force_release_ms,
+        modifier_stale_gc_ms: settings.modifier_stale_gc_ms,
+        replayed_modifier_force_release_ms: settings.replayed_modifier_force_release_ms,
+        hypershift_trigger: settings.hypershift_trigger.trim(),
     };
     let json = match serde_json::to_string(&init) {
         Ok(j) => j,
@@ -2537,6 +3524,11 @@ fn spawn_capture_helper(
                 log::debug!("[helper] {rest}");
                 continue;
             }
+            // Hook events worth a normal-level line (see `NOTE_PREFIX`).
+            if let Some(rest) = trimmed.strip_prefix(NOTE_PREFIX) {
+                log::info!("[capture] {rest}");
+                continue;
+            }
             // Factory-defaults signature detected by the hook (see
             // FactoryDefaultsDetector): warn loudly instead of letting the
             // mouse silently type digits into the foreground app.
@@ -2556,14 +3548,26 @@ fn spawn_capture_helper(
                 let _ = app.emit(runtime::EVENT_MOUSE_DEFAULTS_SUSPECTED, ());
                 continue;
             }
+            // `HS:` is stamped by the helper when the press arrived while the
+            // Hypershift trigger was held; it wraps the other prefixes.
+            let (is_hypershift, rest) = match trimmed.strip_prefix(HS_PREFIX) {
+                Some(rest) => (true, rest),
+                None => (false, trimmed),
+            };
             let (is_key_up, is_repeat, encoded_key) =
-                if let Some(rest) = trimmed.strip_prefix("UP:") {
+                if let Some(rest) = rest.strip_prefix("UP:") {
                     (true, false, rest.to_owned())
-                } else if let Some(rest) = trimmed.strip_prefix("REPEAT:") {
+                } else if let Some(rest) = rest.strip_prefix("REPEAT:") {
                     (false, true, rest.to_owned())
                 } else {
-                    (false, false, trimmed.to_owned())
+                    (false, false, rest.to_owned())
                 };
+            // An unstamped press with a foreign encoding means the firmware's own
+            // Hypershift fired (it swallowed our trigger). Our wheel ticks carry
+            // `HS:`, so they never trip this.
+            if !is_hypershift && !is_key_up {
+                crate::onboard_guard::note_signal(&encoded_key);
+            }
             // try_send instead of send: when the bounded channel is full
             // (consumer stalled), drop the event rather than block this hot
             // path.  See CAPTURE_EVENT_CAPACITY for rationale.
@@ -2573,6 +3577,7 @@ fn spawn_capture_helper(
                 received_at: runtime::timestamp_millis(),
                 is_repeat,
                 is_key_up,
+                is_hypershift,
             }) {
                 // Consumer stalled — this key press was dropped. Rate-limit the
                 // warning so a sustained stall can't re-create the v0.1.15 log
@@ -2593,6 +3598,20 @@ fn spawn_capture_helper(
         // EOF — i.e. the helper process has exited/crashed. Flag it so the
         // worker releases holds whose key-ups will now never arrive.
         helper_died.store(true, Ordering::SeqCst);
+        // Silence used to be the only symptom: capture kept "running" while the
+        // helper was gone, so no button fired and nothing was logged. Record a
+        // warning for the UI so the user knows to restart capture.
+        log::warn!(
+            "[capture] Capture helper exited (stdout closed) — mouse buttons and \
+             modifier combos stop working until capture is restarted."
+        );
+        if let Ok(mut store) = runtime_store.lock() {
+            store.record_warn(
+                "перехват",
+                "Вспомогательный процесс перехвата завершился. Кнопки мыши и комбинации \
+                 с модификаторами перестанут срабатывать — перезапустите перехват.",
+            );
+        }
     });
 
     Some(HelperHandle {
@@ -2687,6 +3706,9 @@ fn run_hotkey_message_loop(
                     received_at: runtime::timestamp_millis(),
                     is_repeat: false,
                     is_key_up: false,
+                    // The RegisterHotKey path has no mouse hook, so it cannot
+                    // observe the Hypershift trigger.
+                    is_hypershift: false,
                 });
             } else {
                 log::warn!("[capture] Received WM_HOTKEY with unrecognized id {hotkey_id}");
@@ -3418,6 +4440,7 @@ mod helper_key_event_tests {
             encoded_key: encoded_key.into(),
             modifiers_mask,
             primary_vk,
+            wheel: None,
         }
     }
 
@@ -4252,6 +5275,7 @@ mod edge_proptests {
             encoded_key: encoded_key.into(),
             modifiers_mask,
             primary_vk,
+            wheel: None,
         }
     }
 

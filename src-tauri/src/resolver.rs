@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use serde::Serialize;
 
-use crate::config::{AppConfig, AppMapping, EncoderMapping, Profile, TriggerMode};
+use crate::config::{AppConfig, AppMapping, EncoderMapping, Layer, Profile, TriggerMode};
 
 const REGEX_PREFIX: &str = "regex:";
 
@@ -244,6 +244,35 @@ pub fn resolve_input_preview_with_override(
     process_path: Option<&str>,
     override_profile_id: Option<&str>,
 ) -> ResolvedInputPreview {
+    resolve_input_preview_with_overrides(
+        config,
+        encoded_key,
+        exe,
+        title,
+        process_path,
+        override_profile_id,
+        false,
+    )
+}
+
+/// [`resolve_input_preview_with_override`] with the software-Hypershift state.
+///
+/// `force_hypershift` is `true` while the Hypershift trigger button is held. The
+/// device emits exactly one keystroke per physical button, so the layer cannot be
+/// derived from the encoded key (`F13` is `F13` in both layers) — the trigger
+/// imposes it. The press then resolves through the `hypershift` layer of the same
+/// control; a control with no enabled hypershift-layer binding for the resolved
+/// profile keeps its standard behaviour, so only deliberately re-bound controls
+/// change.
+pub fn resolve_input_preview_with_overrides(
+    config: &AppConfig,
+    encoded_key: &str,
+    exe: &str,
+    title: &str,
+    process_path: Option<&str>,
+    override_profile_id: Option<&str>,
+    force_hypershift: bool,
+) -> ResolvedInputPreview {
     let normalized_key = normalized_encoded_key(encoded_key);
     let profile_resolution = resolve_profile_for_app_context_with_override(
         config,
@@ -314,6 +343,30 @@ pub fn resolve_input_preview_with_override(
     }
 
     let mapping = matching_mappings[0];
+    // Software Hypershift (see `resolve_input_preview_with_overrides`): the layer
+    // is imposed by the trigger state, not derived from the encoded key. Falls
+    // back to the mapping's own layer when the control has no enabled
+    // hypershift-layer binding in the resolved profile.
+    let layer = if force_hypershift && mapping.layer != Layer::Hypershift {
+        let hypershift_layer_is_bound = profile_resolution
+            .resolved_profile_id
+            .as_deref()
+            .is_some_and(|profile_id| {
+                config.bindings.iter().any(|binding| {
+                    binding.enabled
+                        && binding.profile_id == profile_id
+                        && binding.layer == Layer::Hypershift
+                        && binding.control_id == mapping.control_id
+                })
+            });
+        if hypershift_layer_is_bound {
+            Layer::Hypershift
+        } else {
+            mapping.layer
+        }
+    } else {
+        mapping.layer
+    };
     let binding = profile_resolution
         .resolved_profile_id
         .as_deref()
@@ -321,7 +374,7 @@ pub fn resolve_input_preview_with_override(
             config.bindings.iter().find(|binding| {
                 binding.enabled
                     && binding.profile_id == profile_id
-                    && binding.layer == mapping.layer
+                    && binding.layer == layer
                     && binding.control_id == mapping.control_id
             })
         });
@@ -339,7 +392,7 @@ pub fn resolve_input_preview_with_override(
                 format!(
                     "Resolved `{normalized_key}` to `{}` / `{}`.",
                     mapping.control_id.as_str(),
-                    mapping.layer.as_str()
+                    layer.as_str()
                 ),
             )
         } else {
@@ -376,7 +429,7 @@ pub fn resolve_input_preview_with_override(
         candidate_app_mapping_ids: profile_resolution.candidate_app_mapping_ids,
         candidate_control_ids: vec![mapping.control_id.as_str().to_owned()],
         control_id: Some(mapping.control_id.as_str().to_owned()),
-        layer: Some(mapping.layer.as_str().to_owned()),
+        layer: Some(layer.as_str().to_owned()),
         binding_id: binding.map(|binding| binding.id.clone()),
         binding_label: binding.map(|binding| binding.label.clone()),
         action_id: action.map(|action| action.id.clone()),
@@ -641,6 +694,7 @@ mod tests {
                 last_selected_profile_id: None,
                 onboarding_completed: false,
                 onboarding_step: None,
+                hypershift_trigger: "mouse_right".into(),
             },
             profiles: vec![
                 profile("default", "Default", 0),
@@ -716,6 +770,86 @@ mod tests {
         let result = resolve_input_preview(&config, "F13", "chrome.exe", "Docs", None);
 
         assert_eq!(result.trigger_mode, Some(TriggerMode::Hold));
+    }
+
+    #[test]
+    fn hypershift_override_prefers_bound_hypershift_layer_and_falls_back() {
+        // Software Hypershift: the device emits the same `F13` in both layers, so
+        // the layer is imposed by the trigger state. A control re-bound in the
+        // hypershift layer resolves there; one that is not keeps its standard
+        // binding, so unmodified thumb buttons behave normally while the trigger
+        // is held.
+        let mut config = test_config(vec![]);
+
+        // Trigger held, control has no hypershift binding -> standard binding.
+        let plain = resolve_input_preview_with_overrides(
+            &config,
+            "F13",
+            "chrome.exe",
+            "Docs",
+            None,
+            None,
+            true,
+        );
+        assert_eq!(plain.layer.as_deref(), Some("standard"));
+        assert_eq!(
+            plain.action_id.as_deref(),
+            Some("action-default-standard-thumb-01")
+        );
+
+        // Add a hypershift-layer binding for the same control.
+        config.bindings.push(Binding {
+            id: "binding-default-hypershift-thumb-01".into(),
+            profile_id: "default".into(),
+            layer: Layer::Hypershift,
+            control_id: ControlId::new("thumb_01"),
+            label: "Hypershift".into(),
+            action_id: "action-default-hypershift-thumb-01".into(),
+            color_tag: None,
+            trigger_mode: None,
+            chord_partner: None,
+            throttle_ms: None,
+            enabled: true,
+        });
+        config.actions.push(Action {
+            id: "action-default-hypershift-thumb-01".into(),
+            action_type: ActionType::Disabled,
+            payload: ActionPayload::Disabled(Default::default()),
+            display_name: "Hypershift".into(),
+            notes: None,
+            conditions: Vec::new(),
+        });
+
+        let hypershift = resolve_input_preview_with_overrides(
+            &config,
+            "F13",
+            "chrome.exe",
+            "Docs",
+            None,
+            None,
+            true,
+        );
+        assert_eq!(hypershift.layer.as_deref(), Some("hypershift"));
+        assert_eq!(
+            hypershift.action_id.as_deref(),
+            Some("action-default-hypershift-thumb-01")
+        );
+
+        // Trigger released -> the standard binding wins again.
+        let released = resolve_input_preview_with_overrides(
+            &config,
+            "F13",
+            "chrome.exe",
+            "Docs",
+            None,
+            None,
+            false,
+        );
+        assert_eq!(released.layer.as_deref(), Some("standard"));
+        assert_eq!(
+            released.action_id.as_deref(),
+            Some("action-default-standard-thumb-01")
+        );
     }
 
     fn app_mapping(
@@ -917,6 +1051,7 @@ mod edge_proptests {
                 last_selected_profile_id: None,
                 onboarding_completed: false,
                 onboarding_step: None,
+                hypershift_trigger: "mouse_right".into(),
             },
             profiles: vec![
                 minimal_profile("default", "Default", true),

@@ -3,7 +3,16 @@ use crate::hotkeys::HotkeyModifiers;
 use crate::vk::*;
 
 #[cfg(target_os = "windows")]
-pub(crate) const INTERNAL_SENDINPUT_EXTRA_INFO: usize = 0x4E41_4741_5354_5544usize;
+/// `dwExtraInfo` tag marking our own injected input, so every LL hook passes it
+/// through instead of acting on it.
+///
+/// **Must fit in 32 bits.**  Measured on Windows: a `WH_MOUSE_LL` hook receives
+/// `dwExtraInfo` truncated to its low dword (a 64-bit `0x1122334455667788`
+/// arrives as `0x55667788`), while a `WH_KEYBOARD_LL` hook receives the full
+/// value.  A wider tag silently stops matching in the mouse hook, which then
+/// treats our own injections as physical input — the injected right click gets
+/// swallowed and the Hypershift trigger state is clobbered by it.
+pub(crate) const INTERNAL_SENDINPUT_EXTRA_INFO: usize = 0x4E41_4741usize; // "NAGA"
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortcutDispatchReport {
@@ -2460,31 +2469,42 @@ pub fn send_mouse_action(
 #[cfg(target_os = "windows")]
 const WHEEL_DELTA: i32 = 120;
 
+/// Build one absolute-position-less mouse `INPUT` carrying our
+/// [`INTERNAL_SENDINPUT_EXTRA_INFO`] tag, so every LL hook (keyboard and mouse)
+/// recognizes the event as ours and passes it through untouched.
+#[cfg(target_os = "windows")]
+pub(crate) fn make_mouse_input(
+    flags: u32,
+    mouse_data: i32,
+) -> windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT};
+
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: mouse_data as u32,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: INTERNAL_SENDINPUT_EXTRA_INFO,
+            },
+        },
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn send_mouse_event(action: crate::config::MouseActionKind) -> Result<(), String> {
     use crate::config::MouseActionKind;
     use std::mem::size_of;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-        MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-        MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput,
+        INPUT, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN,
+        MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
+        MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, SendInput,
     };
 
-    let make_mouse = |flags: u32, mouse_data: i32| -> INPUT {
-        INPUT {
-            r#type: INPUT_MOUSE,
-            Anonymous: INPUT_0 {
-                mi: MOUSEINPUT {
-                    dx: 0,
-                    dy: 0,
-                    mouseData: mouse_data as u32,
-                    dwFlags: flags,
-                    time: 0,
-                    dwExtraInfo: INTERNAL_SENDINPUT_EXTRA_INFO,
-                },
-            },
-        }
-    };
+    let make_mouse = make_mouse_input;
 
     let inputs: Vec<INPUT> = match action {
         MouseActionKind::LeftClick => vec![

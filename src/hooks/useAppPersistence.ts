@@ -1,6 +1,7 @@
 import { startTransition, useEffect, useRef, useState } from "react";
 
-import { loadConfig, normalizeCommandError, saveConfig } from "../lib/backend";
+import { loadConfig, normalizeCommandError, saveConfig, verifyOnboardMapping } from "../lib/backend";
+import { onboardBindings } from "../lib/onboard-mapping";
 import i18n from "../i18n";
 import type {
   AppConfig,
@@ -62,6 +63,7 @@ export function useAppPersistence(
   onAutoSaved?: () => void,
   onAutoSaveFailed?: (reason: string) => void,
   onBackupFailed?: () => void,
+  onOnboardWriteFailed?: (reason: string) => void,
 ): AppPersistence {
   const [viewState, setViewState] = useState<ViewState>("idle");
   const [snapshot, setSnapshot] = useState<LoadConfigResponse | null>(null);
@@ -82,6 +84,8 @@ export function useAppPersistence(
   onAutoSaveFailedRef.current = onAutoSaveFailed;
   const onBackupFailedRef = useRef(onBackupFailed);
   onBackupFailedRef.current = onBackupFailed;
+  const onOnboardWriteFailedRef = useRef(onOnboardWriteFailed);
+  onOnboardWriteFailedRef.current = onOnboardWriteFailed;
   // Warn only once per session that best-effort backups can't be written.
   const backupWarnedRef = useRef(false);
   // Mirror of the last successfully-persisted config. Used to roll back the
@@ -137,6 +141,24 @@ export function useAppPersistence(
     }
   }
 
+  // The mouse keeps its own button mapping, so every config that reaches disk
+  // has to reach the mouse too. The mouse cannot be read, so this writes each
+  // binding and lets the mouse confirm it; a failure is not a config failure —
+  // the device may be offline or held by its vendor driver — so it is reported
+  // as a warning instead of rolling the just-saved config back.
+  async function writeOnboardMapping(config: AppConfig) {
+    const bindings = onboardBindings(config);
+    if (bindings.length === 0) return;
+    try {
+      const report = await verifyOnboardMapping(bindings);
+      if (report.failed.length > 0) {
+        onOnboardWriteFailedRef.current?.(report.failed.join(", "));
+      }
+    } catch (unknownError) {
+      onOnboardWriteFailedRef.current?.(normalizeCommandError(unknownError).message);
+    }
+  }
+
   async function flushSave() {
     const config = saveQueueRef.current;
     if (!config || isSavingRef.current) return;
@@ -159,6 +181,7 @@ export function useAppPersistence(
         setError(null);
         setViewState("ready");
       });
+      await writeOnboardMapping(result.config);
       onAutoSavedRef.current?.();
       if (result.backupFailed && !backupWarnedRef.current) {
         backupWarnedRef.current = true;
@@ -221,6 +244,7 @@ export function useAppPersistence(
         setError(null);
         setViewState("ready");
       });
+      await writeOnboardMapping(result.config);
       return true;
     } catch (unknownError) {
       startTransition(() => {

@@ -115,5 +115,6 @@ Run before declaring a code change done:
 ## Child DOX Index
 
 - `src/AGENTS.md` — React + TypeScript frontend (UI, pure logic, hooks, i18n)
-- `src-tauri/AGENTS.md` — Rust + Tauri backend (capture, execution, config, Synapse import, platform)
+- `src-tauri/AGENTS.md` — Rust + Tauri backend (capture, execution, config, Synapse import, mouse onboard memory, platform)
 - `schemas/AGENTS.md` — the config JSON Schema contract (Rust ↔ schema ↔ TS)
+- `plans/onboard-memory/2026-10-16-findings.md` — investigation ledger for the mouse onboard-memory and raw-HID work: measured hardware/registry facts, REA state, open questions, and traps already paid for

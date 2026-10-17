@@ -2,12 +2,18 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { changeLanguage } from "../../i18n";
-import type { AppConfig, CommandError, Settings } from "../../lib/config";
+import type {
+  AppConfig,
+  CommandError,
+  HypershiftTrigger,
+  Settings,
+} from "../../lib/config";
 import {
   acceleratorKeyFromCode,
   serializeAccelerator,
 } from "../../lib/action-picker-helpers";
 import { CaptureRow } from "../action-picker/shared/CaptureRow";
+import { PillTrack } from "../PillTrack";
 import { Notice, Toggle } from "../shared";
 import { useAutostartStatus } from "./useAutostartStatus";
 
@@ -181,6 +187,31 @@ export function AppSettings({
           }}
           aria-label={t("settings.deviceNameHeader")}
         />
+      </section>
+
+      {/* Software Hypershift */}
+      <section className="settings-section">
+        <div className="settings-section__header">
+          <span className="settings-section__title">{t("settings.hypershiftHeader")}</span>
+        </div>
+        <p className="panel__muted help-sm">{t("settings.hypershiftHelp")}</p>
+        <div className="osd-settings-row">
+          <span className="osd-settings-row__label">
+            {t("settings.hypershiftTriggerLabel")}
+          </span>
+          <PillTrack<HypershiftTrigger>
+            items={[
+              { key: "mouse_right", label: t("settings.hypershiftMouseRight") },
+              { key: "mouse_left", label: t("settings.hypershiftMouseLeft") },
+              { key: "wheel_click", label: t("settings.hypershiftWheelClick") },
+              { key: "mouse_4", label: t("settings.hypershiftMouse4") },
+              { key: "mouse_5", label: t("settings.hypershiftMouse5") },
+              { key: "none", label: t("settings.hypershiftOff") },
+            ]}
+            active={osd.hypershiftTrigger ?? "mouse_right"}
+            onSelect={(trigger) => updateSettings({ hypershiftTrigger: trigger })}
+          />
+        </div>
       </section>
 
       {/* Language selector */}

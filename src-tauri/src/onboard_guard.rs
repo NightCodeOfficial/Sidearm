@@ -1,0 +1,389 @@
+//! Keeps the mouse's onboard mapping in Sidearm's hands.
+//!
+//! Razer's engine takes the mouse over for as long as it runs: it switches the
+//! device to driver mode, where the firmware ignores onboard memory and the
+//! driver's own mapping reaches the OS, and it rewrites the onboard records with
+//! its own profile — including a firmware Hypershift on a mouse button, which
+//! swallows that button. Measured: mode `Normal` makes the mouse emit the records
+//! written by [`crate::mouse_memory`], mode `Driver` hands every button to Razer.
+//!
+//! The guard checks the mode, the key records (thumbs + top buttons) and the
+//! plain mouse buttons while the runtime is active — read-only HID queries, with
+//! a write only when something actually changed — puts them back, and reports
+//! the takeover so the user sees Razer being undone instead of wondering why the
+//! buttons moved. It checks at once on start, every [`POLL_INTERVAL`] after that,
+//! every [`FAST_POLL`] while the mouse refuses queries (asleep) or Razer's engine
+//! runs, and immediately on [`request_check`]. It stays idle while the runtime is
+//! stopped: a stopped Sidearm is not fighting for the mouse.
+
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::mouse_memory::{OnboardBinding, VendorDevice, MODE_NORMAL};
+use crate::runtime::RuntimeStore;
+
+/// Vendor and product id of the built-in Naga.
+const VID: u16 = 0x1532;
+const PID: u16 = 0x00B4;
+/// Regular poll period. The queries are read-only and answered in milliseconds.
+const POLL_INTERVAL: Duration = Duration::from_secs(20);
+/// Poll period while a takeover is likely or a check could not run: the mouse
+/// refused the query (a sleeping wireless mouse answers status `0x04`), the
+/// runtime is not running yet, or Razer's engine is up.
+const FAST_POLL: Duration = Duration::from_secs(3);
+/// Minimum gap between two notifications of the same kind: Razer's engine can
+/// take the device back right after we put it down, and that must not turn into a
+/// toast loop.
+const NOTIFY_COOLDOWN: Duration = Duration::from_secs(300);
+/// Processes of Razer's engine that write the mouse's memory and mode.
+const RAZER_PROCESSES: [&str; 2] = ["RazerAppEngine.exe", "RzEngineMon.exe"];
+
+/// Emitted when the guard caught Razer holding the mouse back.
+pub const EVENT_ONBOARD_TAKEOVER: &str = "onboard_takeover";
+
+/// Wakes the guard for an immediate check.
+static CHECK_NOW: OnceLock<Sender<()>> = OnceLock::new();
+
+/// What had to be taken back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TakeoverKind {
+    /// The device was in driver mode, so the firmware ignored onboard memory.
+    Mode,
+    /// Onboard records held someone else's mapping.
+    Mappings,
+    /// Razer's engine started; it will take the mouse over while it runs.
+    RazerStarted,
+}
+
+/// Payload of [`EVENT_ONBOARD_TAKEOVER`].
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TakeoverEvent {
+    pub kind: TakeoverKind,
+    /// `false` when the guard could not take the mouse back — Razer held on.
+    pub restored: bool,
+    /// Controls whose stored mapping had been rewritten (mappings kind only).
+    pub controls: Vec<String>,
+}
+
+/// How one check ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    /// The mouse could not be asked (absent, asleep, busy) — no evidence either way.
+    Unreadable,
+    /// Mode and every guarded record matched; `usize` = guarded buttons.
+    Clean(usize),
+    /// Something was taken back (already reported).
+    TookBack,
+}
+
+/// Starts the guard on its own thread. It lives as long as the app does and idles
+/// while the runtime is stopped.
+pub fn spawn(app: AppHandle, runtime_store: Arc<Mutex<RuntimeStore>>, config_dir: PathBuf) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    if CHECK_NOW.set(sender).is_err() {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("onboard-guard".into())
+        .spawn(move || run(&app, &runtime_store, &config_dir, &receiver))
+        .ok();
+}
+
+/// Asks the guard for a check now instead of at its next tick.
+pub fn request_check() {
+    if let Some(sender) = CHECK_NOW.get() {
+        let _ = sender.send(());
+    }
+}
+
+/// Feeds the guard a captured signal. Sidearm writes bare `F13`..`F24` (thumbs)
+/// and `Alt+F23`/`Alt+F24` (top buttons) only, so an `F13`..`F24` with Ctrl, Shift
+/// or Win came from a record someone else stored — Synapse's Hypershift encoding
+/// is `Ctrl+Alt+Shift+Fxx`. Cheap enough for the per-keystroke path.
+pub fn note_signal(encoded_key: &str) {
+    if is_foreign_encoding(encoded_key) {
+        request_check();
+    }
+}
+
+fn is_foreign_encoding(encoded_key: &str) -> bool {
+    let key = encoded_key.rsplit('+').next().unwrap_or("");
+    let is_f13_to_f24 = key
+        .strip_prefix('F')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (13..=24).contains(&n));
+    is_f13_to_f24
+        && ["Ctrl+", "Shift+", "Win+"]
+            .iter()
+            .any(|modifier| encoded_key.contains(modifier))
+}
+
+fn run(
+    app: &AppHandle,
+    runtime_store: &Arc<Mutex<RuntimeStore>>,
+    config_dir: &Path,
+    requests: &Receiver<()>,
+) {
+    log::info!(
+        "[onboard-guard] watching (every {}s while the runtime runs, at once on request)",
+        POLL_INTERVAL.as_secs()
+    );
+    let mut last_notified: Option<(TakeoverKind, Instant)> = None;
+    let mut razer_was_running = false;
+    let mut last_clean: Option<usize> = None;
+    // The first check runs right away instead of after a whole period.
+    let mut wait = Duration::ZERO;
+    loop {
+        match requests.recv_timeout(wait) {
+            Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+        while requests.try_recv().is_ok() {}
+
+        let running = runtime_store
+            .lock()
+            .map(|store| store.is_running())
+            .unwrap_or(false);
+        if !running {
+            wait = FAST_POLL;
+            continue;
+        }
+
+        let razer_running = razer_engine_running();
+        if razer_running && !razer_was_running {
+            notify(
+                app,
+                runtime_store,
+                &mut last_notified,
+                TakeoverEvent {
+                    kind: TakeoverKind::RazerStarted,
+                    restored: true,
+                    controls: Vec::new(),
+                },
+            );
+        }
+        razer_was_running = razer_running;
+
+        let verdict = check_once(app, runtime_store, config_dir, &mut last_notified);
+        match verdict {
+            Verdict::Clean(buttons) if last_clean != Some(buttons) => {
+                record_clean(runtime_store, buttons);
+                last_clean = Some(buttons);
+            }
+            Verdict::TookBack => last_clean = None,
+            _ => {}
+        }
+        wait = if verdict == Verdict::Unreadable || razer_running {
+            FAST_POLL
+        } else {
+            POLL_INTERVAL
+        };
+    }
+}
+
+fn check_once(
+    app: &AppHandle,
+    runtime_store: &Arc<Mutex<RuntimeStore>>,
+    config_dir: &Path,
+    last_notified: &mut Option<(TakeoverKind, Instant)>,
+) -> Verdict {
+    let Ok(device) = VendorDevice::open(VID, PID) else {
+        // No mouse, or its collection is not openable right now.
+        return Verdict::Unreadable;
+    };
+
+    // Read the mode first and only act on a mode we actually read. A sleeping
+    // mouse (or a busy dongle) answers every vendor command with a refusal
+    // instead of a status, and that is not evidence of a takeover — waking it
+    // up is the user's job, not ours.
+    let mode = match device.mode() {
+        Ok(mode) => mode,
+        Err(message) => {
+            log::debug!("[onboard-guard] mode unreadable: {message}");
+            return Verdict::Unreadable;
+        }
+    };
+    let mut took_back = false;
+    if mode != MODE_NORMAL {
+        let restored = device.ensure_normal_mode().is_ok();
+        notify(
+            app,
+            runtime_store,
+            last_notified,
+            TakeoverEvent {
+                kind: TakeoverKind::Mode,
+                restored,
+                controls: Vec::new(),
+            },
+        );
+        if !restored {
+            // Still in driver mode: the stored records say nothing about what
+            // the user's buttons will do, so re-check on the next tick.
+            return Verdict::TookBack;
+        }
+        took_back = true;
+    }
+
+    let Some(config) = read_config(config_dir) else {
+        return Verdict::Unreadable;
+    };
+    let bindings = crate::mouse_memory::onboard_bindings(&config);
+    match drifted_controls(&device, &bindings) {
+        Ok((drifted_keys, drifted_native)) => {
+            if drifted_keys.is_empty() && drifted_native.is_empty() {
+                return if took_back {
+                    Verdict::TookBack
+                } else {
+                    Verdict::Clean(bindings.len() + crate::mouse_memory::native_buttons().len())
+                };
+            }
+            let mut restored = true;
+            if !drifted_keys.is_empty() {
+                restored &= device.apply_bindings(&bindings).is_ok();
+            }
+            if !drifted_native.is_empty() {
+                restored &= device.restore_native_buttons(&drifted_native).is_ok();
+            }
+            let controls = drifted_keys
+                .into_iter()
+                .chain(drifted_native.iter().map(|id| id.to_string()))
+                .collect();
+            notify(
+                app,
+                runtime_store,
+                last_notified,
+                TakeoverEvent {
+                    kind: TakeoverKind::Mappings,
+                    restored,
+                    controls,
+                },
+            );
+            Verdict::TookBack
+        }
+        Err(message) => {
+            log::debug!("[onboard-guard] drift check failed: {message}");
+            Verdict::Unreadable
+        }
+    }
+}
+
+/// Key controls whose record drifted, and native buttons that stopped being
+/// their plain mouse button.
+fn drifted_controls(
+    device: &VendorDevice,
+    bindings: &[OnboardBinding],
+) -> Result<(Vec<String>, Vec<&'static str>), String> {
+    Ok((device.drifted_bindings(bindings)?, device.drifted_native_buttons()?))
+}
+
+fn razer_engine_running() -> bool {
+    crate::platform::shell::list_running_processes()
+        .iter()
+        .any(|process| {
+            RAZER_PROCESSES
+                .iter()
+                .any(|name| process.exe.eq_ignore_ascii_case(name))
+        })
+}
+
+/// The current config, or nothing when it cannot be read — then there is no
+/// expectation to guard.
+fn read_config(config_dir: &Path) -> Option<crate::config::AppConfig> {
+    let path = config_dir.join("config.json");
+    match crate::config::read_and_migrate_config_file(&path) {
+        Ok(config) => Some(config),
+        Err(error) => {
+            log::debug!("[onboard-guard] config unreadable: {error}");
+            None
+        }
+    }
+}
+
+/// Puts a clean verdict into the runtime log (the Diagnostics panel) — once per
+/// change, not every tick.
+fn record_clean(runtime_store: &Arc<Mutex<RuntimeStore>>, buttons: usize) {
+    let message =
+        format!("Проверка мыши: режим Normal, все {buttons} кнопок совпадают с назначениями Sidearm.");
+    log::info!("[onboard-guard] {message}");
+    if let Ok(mut store) = runtime_store.lock() {
+        store.record_info("перехват", message);
+    }
+}
+
+/// Writes the takeover into the runtime log and tells the UI, at most once per
+/// [`NOTIFY_COOLDOWN`] per kind.
+fn notify(
+    app: &AppHandle,
+    runtime_store: &Arc<Mutex<RuntimeStore>>,
+    last_notified: &mut Option<(TakeoverKind, Instant)>,
+    event: TakeoverEvent,
+) {
+    let now = Instant::now();
+    let throttled = matches!(
+        last_notified,
+        Some((kind, at)) if *kind == event.kind && now.duration_since(*at) < NOTIFY_COOLDOWN
+    );
+    let message = takeover_message(&event);
+    if throttled {
+        // The toast is throttled, the evidence is not: a silent log hid repeated
+        // takeovers for a whole session.
+        log::info!("[onboard-guard] {message}");
+        return;
+    }
+    *last_notified = Some((event.kind, now));
+
+    log::warn!("[onboard-guard] {message}");
+    if let Ok(mut store) = runtime_store.lock() {
+        store.record_warn("перехват", message);
+    }
+    if app.webview_windows().is_empty() {
+        return;
+    }
+    let _ = app.emit(EVENT_ONBOARD_TAKEOVER, &event);
+}
+
+fn takeover_message(event: &TakeoverEvent) -> String {
+    match (event.kind, event.restored) {
+        (TakeoverKind::Mode, true) => {
+            "Razer перехватил мышь (режим драйвера) — вернул управление Sidearm.".to_string()
+        }
+        (TakeoverKind::Mode, false) => {
+            "Razer удерживает мышь в режиме драйвера — вернуть управление не удалось.".to_string()
+        }
+        (TakeoverKind::Mappings, true) => format!(
+            "Razer перезаписал назначения кнопок ({}) — восстановил.",
+            event.controls.join(", ")
+        ),
+        (TakeoverKind::Mappings, false) => format!(
+            "Назначения кнопок перезаписаны ({}), восстановить не удалось.",
+            event.controls.join(", ")
+        ),
+        (TakeoverKind::RazerStarted, _) => {
+            "Запущен Razer Synapse — он будет перезаписывать кнопки; Sidearm проверяет мышь каждые 3 с."
+                .to_string()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only an `F13`..`F24` carrying a modifier Sidearm never writes is foreign.
+    #[test]
+    fn foreign_encodings_are_the_ones_sidearm_never_writes() {
+        assert!(is_foreign_encoding("Ctrl+Alt+Shift+F13"));
+        assert!(is_foreign_encoding("Ctrl+Alt+F16"));
+        assert!(is_foreign_encoding("Win+F24"));
+        assert!(!is_foreign_encoding("F13"));
+        assert!(!is_foreign_encoding("Alt+F23"));
+        assert!(!is_foreign_encoding("Ctrl+F12"));
+        assert!(!is_foreign_encoding("Ctrl+Shift+T"));
+    }
+}

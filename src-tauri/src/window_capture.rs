@@ -308,6 +308,7 @@ mod tests {
                 last_selected_profile_id: None,
                 onboarding_completed: false,
                 onboarding_step: None,
+                hypershift_trigger: "mouse_right".into(),
             },
             profiles: vec![
                 profile("default", "Default", 0),
@@ -459,6 +460,7 @@ mod edge_proptests {
                 last_selected_profile_id: None,
                 onboarding_completed: false,
                 onboarding_step: None,
+                hypershift_trigger: "mouse_right".into(),
             },
             profiles: vec![
                 Profile {

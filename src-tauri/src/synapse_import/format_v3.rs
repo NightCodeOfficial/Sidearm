@@ -107,7 +107,8 @@ pub fn parse_synapse_v3_reader<R: Read + std::io::Seek>(
             archive
                 .by_index(i)
                 .ok()
-                .map(|f| (f.name().to_string(), f.size()))
+                // An undecodable name still counts toward the size budget.
+                .map(|f| (f.name().map(|n| n.into_owned()).unwrap_or_default(), f.size()))
         })
         .collect();
     enforce_zip_budget(

@@ -10,6 +10,10 @@ mod executor;
 mod hotkeys;
 mod input_synthesis;
 mod log_cleanup;
+#[cfg(target_os = "windows")]
+mod mouse_memory;
+#[cfg(target_os = "windows")]
+mod onboard_guard;
 mod paths;
 mod platform;
 mod recorder;
@@ -2650,6 +2654,74 @@ async fn stop_macro_recording(
         .map_err(|msg| CommandError::new("recording_error", msg, None))
 }
 
+/// Writes the thumb-button mapping into the mouse's onboard memory, so the
+/// mouse emits those key codes itself and no vendor remapper has to run.
+/// `bindings` come from the config's `encoder_mappings`; each write is verified
+/// against the mouse's own reply.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn apply_onboard_mapping(
+    bindings: Vec<mouse_memory::OnboardBinding>,
+) -> Result<(), CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let device = mouse_memory::VendorDevice::open(0x1532, 0x00B4)
+            .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))?;
+        device
+            .apply_bindings(&bindings)
+            .map_err(|msg| CommandError::new("onboard_write_unconfirmed", msg, None))
+    })
+    .await
+    .map_err(|e| CommandError::internal(format!("apply_onboard_mapping task failed: {e}")))?
+}
+
+/// Asks the mouse which of the given bindings it actually holds. The vendor
+/// collection answers only with what the previous write stored, so the mouse
+/// cannot be read — each binding is written and confirmed by its echo.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn verify_onboard_mapping(
+    bindings: Vec<mouse_memory::OnboardBinding>,
+) -> Result<mouse_memory::OnboardReport, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let device = mouse_memory::VendorDevice::open(0x1532, 0x00B4)
+            .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))?;
+        device
+            .verify(&bindings)
+            .map_err(|msg| CommandError::new("onboard_write_unconfirmed", msg, None))
+    })
+    .await
+    .map_err(|e| CommandError::internal(format!("verify_onboard_mapping task failed: {e}")))?
+}
+
+/// Puts the mouse back under Sidearm's control: `Normal` mode plus the onboard
+/// mapping the config asks for. The takeover notification offers this so the user
+/// can take the buttons back without restarting anything.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn restore_onboard_control(app: AppHandle) -> Result<(), CommandError> {
+    let config_dir = resolve_config_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let config = config::read_and_migrate_config_file(&config_dir.join("config.json"))
+            .map_err(CommandError::from)?;
+        let device = mouse_memory::VendorDevice::open(0x1532, 0x00B4)
+            .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))?;
+        device
+            .ensure_normal_mode()
+            .map_err(|msg| CommandError::new("onboard_mode_stuck", msg, None))?;
+        device
+            .apply_bindings(&mouse_memory::onboard_bindings(&config))
+            .map_err(|msg| CommandError::new("onboard_write_unconfirmed", msg, None))?;
+        // Razer may also have stored Hypershift (or a key) over a plain mouse
+        // button, which swallows the software Hypershift trigger.
+        let native: Vec<&str> = mouse_memory::native_buttons().iter().map(|(id, _, _)| *id).collect();
+        device
+            .restore_native_buttons(&native)
+            .map_err(|msg| CommandError::new("onboard_write_unconfirmed", msg, None))
+    })
+    .await
+    .map_err(|e| CommandError::internal(format!("restore_onboard_control task failed: {e}")))?
+}
+
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn get_exe_icon(
@@ -2985,6 +3057,9 @@ pub fn run() {
         Arc::new(Mutex::new(store))
     };
     let log_rx_for_setup = Mutex::new(Some((log_rx, log_send_pending_for_bridge)));
+    // The guard thread outlives setup; the builder still needs the original for
+    // `manage`, so hand the setup closure its own handle.
+    let runtime_store_for_guard = runtime_store.clone();
 
     tauri::Builder::default()
         // Single-instance guard MUST be the first plugin registered. A second
@@ -3082,6 +3157,23 @@ pub fn run() {
                         }
                     })
                     .ok();
+            }
+
+            // Watch the mouse's onboard state while the runtime is active: Razer's
+            // engine takes the device over (driver mode + its own slots) whenever it
+            // runs, and the mapping Sidearm wrote would silently stop mattering.
+            #[cfg(target_os = "windows")]
+            match resolve_config_dir(app.handle()) {
+                Ok(config_dir) => {
+                    onboard_guard::spawn(
+                        app.handle().clone(),
+                        runtime_store_for_guard.clone(),
+                        config_dir,
+                    );
+                }
+                Err(error) => {
+                    log::warn!("[onboard-guard] not started: {}", error.message);
+                }
             }
 
             // Log whether the process is running with elevated (admin) privileges.
@@ -3445,7 +3537,10 @@ pub fn run() {
             delete_device_image,
             start_macro_recording,
             record_keystroke,
-            stop_macro_recording
+            stop_macro_recording,
+            apply_onboard_mapping,
+            verify_onboard_mapping,
+            restore_onboard_control
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

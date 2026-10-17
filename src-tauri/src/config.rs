@@ -261,6 +261,13 @@ pub struct Settings {
     /// the runtime never reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
+    /// Physical control that acts as the software Hypershift modifier while
+    /// held: presses arriving during the hold resolve through the `hypershift`
+    /// layer, and the left mouse button produces a right click. `"none"`
+    /// disables Hypershift. Must be one of [`HYPER_TRIGGER_CONTROLS`] or
+    /// `"none"`. The trigger button itself never reaches the applications.
+    #[serde(default = "default_hypershift_trigger")]
+    pub hypershift_trigger: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -351,6 +358,28 @@ pub const NAGA_CONTROL_IDS: [&str; 27] = [
     "top_special_02",
     "top_special_03",
 ];
+
+/// `Settings.hypershift_trigger` value that disables the software Hypershift.
+pub const HYPER_TRIGGER_NONE: &str = "none";
+
+/// Controls that can act as the software Hypershift trigger — the buttons the
+/// mouse still reports as native mouse buttons. A button whose onboard record
+/// was rewritten into a keystroke never reaches the low-level mouse hook, so it
+/// cannot be a trigger (`thumb_*`, `top_aux_*`, `mouse_4`/`mouse_5` when the
+/// device emits `Alt+F13`… for them, …).
+pub const HYPER_TRIGGER_CONTROLS: [&str; 5] = [
+    "mouse_right",
+    "mouse_left",
+    "wheel_click",
+    "mouse_4",
+    "mouse_5",
+];
+
+/// Default Hypershift trigger: the right mouse button, matching the Synapse
+/// assignment this device shipped with (see the `mouse_right` control note).
+pub fn default_hypershift_trigger() -> String {
+    "mouse_right".to_owned()
+}
 
 /// A physical input device (mouse, macropad, …) whose controls appear in
 /// `physicalControls` tagged with this device's id. The built-in Naga device
@@ -1312,6 +1341,14 @@ fn validate_config(config: &AppConfig) -> Result<Vec<ValidationWarning>, ConfigS
             "settings.globalShortcut `{shortcut}` is not a valid global shortcut."
         ));
     }
+    let trigger = config.settings.hypershift_trigger.trim();
+    if trigger != HYPER_TRIGGER_NONE && !HYPER_TRIGGER_CONTROLS.contains(&trigger) {
+        errors.push(format!(
+            "settings.hypershiftTrigger `{trigger}` is not a supported trigger (expected \
+             `{HYPER_TRIGGER_NONE}` or one of {}).",
+            HYPER_TRIGGER_CONTROLS.join(", ")
+        ));
+    }
     if let Some(profile) = config
         .profiles
         .iter()
@@ -1901,6 +1938,7 @@ pub(crate) fn default_seed_config() -> AppConfig {
             last_selected_profile_id: None,
             onboarding_completed: false,
             onboarding_step: None,
+            hypershift_trigger: default_hypershift_trigger(),
         },
         profiles: seed_profiles(),
         devices: vec![builtin_naga_device()],
@@ -4384,6 +4422,35 @@ mod edge_proptests {
             "minimizeToTray":false,"debugLogging":false}"#;
         let s: Settings = serde_json::from_str(json).expect("parse");
         assert_eq!(s.modifier_stale_gc_ms, None);
+    }
+
+    /// The Hypershift trigger defaults to the right mouse button (the Synapse
+    /// assignment this device shipped with) so an older config keeps Hypershift.
+    #[test]
+    fn settings_hypershift_trigger_defaults_to_mouse_right() {
+        let json = r#"{"fallbackProfileId":"p","theme":"t","startWithWindows":false,
+            "minimizeToTray":false,"debugLogging":false}"#;
+        let s: Settings = serde_json::from_str(json).expect("parse");
+        assert_eq!(s.hypershift_trigger, "mouse_right");
+    }
+
+    /// Only the native mouse buttons (and `none`) are accepted as triggers —
+    /// a typo must not silently disable Hypershift.
+    #[test]
+    fn validation_rejects_unsupported_hypershift_trigger() {
+        let mut cfg = minimal_valid_config();
+        cfg.settings.hypershift_trigger = "middle_click".into();
+        assert!(validate_config(&cfg).is_err());
+
+        for trigger in HYPER_TRIGGER_CONTROLS {
+            cfg.settings.hypershift_trigger = trigger.into();
+            assert!(
+                validate_config(&cfg).is_ok(),
+                "`{trigger}` must be an accepted trigger"
+            );
+        }
+        cfg.settings.hypershift_trigger = HYPER_TRIGGER_NONE.into();
+        assert!(validate_config(&cfg).is_ok(), "`none` must be accepted");
     }
 
     // ─── Overflow / duplicate-id handling ────────────────────────────────────

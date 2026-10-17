@@ -80,6 +80,12 @@ pub struct EncodedKeyEvent {
     pub received_at: u64,
     pub is_repeat: bool,
     pub is_key_up: bool,
+    /// `true` when the press arrived while the software Hypershift trigger was
+    /// held, so the resolver must look the binding up in the `hypershift` layer
+    /// (with a fallback to the standard one). Stamped at capture time — reading
+    /// the trigger state when the worker gets around to the event would race a
+    /// fast press/release.
+    pub is_hypershift: bool,
 }
 
 #[derive(Default)]
@@ -420,13 +426,14 @@ fn process_encoded_key_event(
         )
     };
 
-    let preview = resolver::resolve_input_preview_with_override(
+    let preview = resolver::resolve_input_preview_with_overrides(
         config,
         &event.encoded_key,
         exe,
         title,
         process_path,
         manual_profile_override.as_deref(),
+        event.is_hypershift,
     );
 
     match preview.status {
@@ -680,7 +687,15 @@ fn run_fire_and_forget(
     mut log_entries: Vec<(&str, String, bool)>,
     is_fg_elevated: bool,
 ) {
-    log::info!("[capture] Dispatching action for {}", preview.encoded_key);
+    // Name the control and the layer: "the wrong action fired" is otherwise
+    // indistinguishable from "the right control fired the right action" in the
+    // log, and the two layers of one control hold different actions.
+    log::info!(
+        "[capture] Dispatching action for {} (control {}, layer {})",
+        preview.encoded_key,
+        preview.control_id.as_deref().unwrap_or("?"),
+        preview.layer.as_deref().unwrap_or("?")
+    );
     match executor::run_preview_action(config, preview) {
         Ok(mut execution) => {
             if is_fg_elevated {

@@ -42,6 +42,7 @@ import {
   listenDragDrop,
   listenElevatedForeground,
   listenMouseDefaultsSuspected,
+  listenOnboardTakeover,
   listenSingleInstanceBlocked,
   listenTrayProfileChanged,
   listenQuickRuleStart,
@@ -49,6 +50,7 @@ import {
   parseSynapseSource,
   relaunchAsAdmin,
   restoreConfigFromBackup,
+  restoreOnboardControl,
 } from "./lib/backend";
 import { displayNameForControl, labelForLayer, relativeTime } from "./lib/labels";
 import { exportProfileToFile } from "./lib/profile-transfer";
@@ -110,8 +112,16 @@ function App() {
     [showToast, t],
   );
 
+  const handleOnboardWriteFailed = useCallback(
+    (reason: string) => {
+      showToast(t("toast.onboardWriteFailed", { reason }), "warning");
+    },
+    [showToast, t],
+  );
+
   const persistence = useAppPersistence(undefined, handleAutoSaveFailed, () =>
   showToast(t("toast.backupFailed"), "warning"),
+  handleOnboardWriteFailed,
 );
   const {
     viewState,
@@ -214,6 +224,34 @@ function App() {
     void listenMouseDefaultsSuspected(() => {
       if (!hasBuiltinDeviceRef.current) return;
       showToast(t("mouseDefaults.suspected"), "warning");
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, [showToast, t]);
+
+  // The backend guard caught Razer's engine holding the mouse (driver mode, or
+  // slots rewritten with Razer's own profile) and already took it back. Tell the
+  // user why their buttons moved, and offer a forced re-apply.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenOnboardTakeover(({ kind, restored }) => {
+      // Nothing to take back yet — the guard now checks every few seconds.
+      if (kind === "razerStarted") {
+        showToast(t("onboard.razerStarted"), "warning");
+        return;
+      }
+      const messageKey = kind === "mode"
+        ? (restored ? "onboard.takeoverMode" : "onboard.takeoverModeFailed")
+        : (restored ? "onboard.takeoverMappings" : "onboard.takeoverMappingsFailed");
+      showToast(t(messageKey), "warning", {
+        label: t("onboard.restoreAction"),
+        onClick: () => {
+          void restoreOnboardControl()
+            .then(() => showToast(t("onboard.restoreDone"), "success"))
+            .catch((e: unknown) => showToast(normalizeCommandError(e).message, "warning"));
+        },
+      });
     }).then((fn) => {
       unlisten = fn;
     });

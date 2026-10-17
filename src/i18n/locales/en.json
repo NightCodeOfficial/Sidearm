@@ -504,6 +504,15 @@
     "deviceNameHeader": "DEVICE NAME",
     "deviceNameHelp": "Label shown under the brand in the sidebar. Leave empty to show \"Mouse not recognized\".",
     "deviceNamePlaceholder": "e.g. Razer Naga V2 HyperSpeed",
+    "hypershiftHeader": "HYPERSHIFT",
+    "hypershiftHelp": "Button held down to switch the 12 thumb buttons to their Hypershift actions. While it is held, the right click is produced by the left button. Only buttons the mouse still reports to Windows can be used — if the mouse's own memory was rewritten to send a keystroke for a button, Windows never sees that button.",
+    "hypershiftTriggerLabel": "TRIGGER BUTTON",
+    "hypershiftMouseRight": "Right",
+    "hypershiftMouseLeft": "Left",
+    "hypershiftWheelClick": "Wheel",
+    "hypershiftMouse4": "Button 4",
+    "hypershiftMouse5": "Button 5",
+    "hypershiftOff": "Off",
     "globalShortcutHeader": "GLOBAL SHORTCUT",
     "globalShortcutHelp": "Shortcut that shows or hides the Sidearm window from any app. Leave empty for Ctrl+Alt+N.",
     "globalShortcutPlaceholder": "ctrl+alt+n",
@@ -1021,6 +1030,7 @@
     "redone": "Change redone",
     "saveFailedRollback": "Change reverted: {{reason}}",
     "backupFailed": "Couldn't write a config backup — check the config folder's disk space and permissions. Your settings still saved.",
+    "onboardWriteFailed": "Couldn't update the mouse's own button mapping: {{reason}} — the mouse may be offline. Your settings still saved.",
     "undoAction": "Redo",
     "openConfig": "Open folder"
   },
@@ -1032,6 +1042,15 @@
   },
   "mouseDefaults": {
     "suspected": "Mouse buttons are typing factory digits (1–12) instead of the configured keys — the Razer profile is not applied. Make sure Synapse is running, or save the profile to the mouse's onboard memory."
+  },
+  "onboard": {
+    "takeoverMode": "Razer took the mouse over (driver mode) — Sidearm took it back.",
+    "takeoverModeFailed": "Razer is holding the mouse in driver mode — Sidearm's assignments do not apply right now.",
+    "takeoverMappings": "Razer rewrote the button assignments — Sidearm restored them.",
+    "takeoverMappingsFailed": "Razer rewrote the button assignments and they could not be restored.",
+    "restoreAction": "Take back control",
+    "restoreDone": "Sidearm controls the mouse again.",
+    "razerStarted": "Razer Synapse is running — it rewrites the mouse buttons. Sidearm keeps restoring them, but it is better to close Synapse and turn off its autostart."
   },
   "elevation": {
     "foregroundBlocked": "“{{exe}}” is running as administrator — Windows blocks Sidearm's input there.",
