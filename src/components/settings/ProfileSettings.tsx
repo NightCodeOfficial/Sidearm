@@ -13,7 +13,7 @@ import { exportProfileToFile, importProfileFromFile } from "../../lib/profile-tr
 import { normalizeCommandError } from "../../lib/backend";
 import { clampPriority } from "../../lib/helpers";
 import { PresetsModal } from "../PresetsModal";
-import { Notice, Toggle } from "../shared";
+import { HelpTip, Notice, SettingRow, Toggle } from "../shared";
 import { CopyIcon, ExportIcon, ImportIcon, TrashIcon } from "../icons";
 
 export interface ProfileSettingsProps {
@@ -143,54 +143,53 @@ export function ProfileSettings({
           <div className="settings-editor">
             <div className="settings-editor__title">{t("settings.profileTitle", { name: activeProfile.name })}</div>
 
-            <div className="field-row">
-              <label className="field">
-                <span className="field__label">{t("settings.nameLabel")}</span>
-                <input
-                  type="text"
-                  value={activeProfile.name}
-                  onChange={(e) =>
-                    updateDraft(
-                      (c) => upsertProfile(c, { ...activeProfile, name: e.target.value }),
-                      { coalesceKey: `profile-name:${activeProfile.id}` },
-                    )
+            <SettingRow title={t("settings.nameLabel")}>
+              <input
+                type="text"
+                className="settings-text-input"
+                aria-label={t("settings.nameLabel")}
+                value={activeProfile.name}
+                onChange={(e) =>
+                  updateDraft(
+                    (c) => upsertProfile(c, { ...activeProfile, name: e.target.value }),
+                    { coalesceKey: `profile-name:${activeProfile.id}` },
+                  )
+                }
+                onBlur={(e) => {
+                  if (!e.target.value.trim()) {
+                    updateDraft((c) =>
+                      upsertProfile(c, { ...activeProfile, name: t("settings.unnamed") }),
+                    );
+                    showToast(t("settings.renamedToUnnamed"), "info");
                   }
-                  onBlur={(e) => {
-                    if (!e.target.value.trim()) {
-                      updateDraft((c) =>
-                        upsertProfile(c, { ...activeProfile, name: t("settings.unnamed") }),
-                      );
-                      showToast(t("settings.renamedToUnnamed"), "info");
-                    }
-                  }}
-                />
-              </label>
-              <label className="field field--narrow">
-                <span className="field__label">
-                  {t("settings.priorityLabel")}
-                  <span
-                    className="field__hint"
-                    title={t("settings.priorityTooltip")}
-                  >
-                    ?
-                  </span>
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  max={9999}
-                  value={activeProfile.priority}
-                  onChange={(e) => {
-                    const v = Number(e.target.value);
-                    const clamped = clampPriority(v);
-                    updateDraft((c) => upsertProfile(c, { ...activeProfile, priority: clamped }));
-                  }}
-                />
-              </label>
-            </div>
+                }}
+              />
+            </SettingRow>
 
-            <div className="field field--inline">
-              <span className="field__label">{t("settings.enabledLabel")}</span>
+            <SettingRow
+              title={
+                <>
+                  {t("settings.priorityLabel")}
+                  <HelpTip text={t("settings.priorityTooltip")} />
+                </>
+              }
+            >
+              <input
+                type="number"
+                className="input settings-number-input"
+                aria-label={t("settings.priorityLabel")}
+                min={0}
+                max={9999}
+                value={activeProfile.priority}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  const clamped = clampPriority(v);
+                  updateDraft((c) => upsertProfile(c, { ...activeProfile, priority: clamped }));
+                }}
+              />
+            </SettingRow>
+
+            <SettingRow title={t("settings.enabledLabel")}>
               <Toggle
                 checked={activeProfile.enabled}
                 onChange={(checked) =>
@@ -198,7 +197,7 @@ export function ProfileSettings({
                 }
                 ariaLabel={t("settings.enabledLabel")}
               />
-            </div>
+            </SettingRow>
 
             <label className="field">
               <span className="field__label">{t("settings.descriptionLabel")}</span>

@@ -275,6 +275,10 @@
         },
         "showBatteryInTray": {
           "type": "boolean"
+        },
+        "offlineProfileId": {
+          "type": "string",
+          "description": "Profile written into the mouse on exit for use without Sidearm; absent = the profile in effect at exit."
         }
       }
     },

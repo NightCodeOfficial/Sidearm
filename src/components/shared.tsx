@@ -60,18 +60,26 @@ export function SelectField<T extends string>({
   onChange,
   disabled,
   className,
+  ariaLabel,
 }: {
-  label: React.ReactNode;
+  /** Omit inside a `SettingRow`, whose title already names the field. */
+  label?: React.ReactNode;
   value: T;
   options: ReadonlyArray<{ value: T; label: string }>;
   onChange: (value: T) => void;
   disabled?: boolean;
   className?: string;
+  /** Accessible name when there is no visible `label`. */
+  ariaLabel?: string;
 }) {
   return (
     <label className={`field${className ? ` ${className}` : ""}`}>
-      <span className="field__label">{label}</span>
-      <select value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as T)}>
+      {label ? <span className="field__label">{label}</span> : null}
+      <select
+        value={value}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        onChange={(e) => onChange(e.target.value as T)}>
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
             {opt.label}
@@ -145,6 +153,34 @@ export function HelpTip({ text, className }: { text: string; className?: string 
         </span>
       ) : null}
     </span>
+  );
+}
+
+/** One settings line: title + optional hint on the left, the control on the
+ *  right. Rows in a section are separated by a hairline. */
+export function SettingRow({
+  title,
+  hint,
+  children,
+  sub,
+  disabled,
+}: {
+  title: React.ReactNode;
+  hint?: React.ReactNode;
+  children?: React.ReactNode;
+  /** Indented under the row it depends on. */
+  sub?: boolean;
+  disabled?: boolean;
+}) {
+  const modifiers = `${sub ? " setting-row--sub" : ""}${disabled ? " setting-row--disabled" : ""}`;
+  return (
+    <div className={`setting-row${modifiers}`}>
+      <div className="setting-row__main">
+        <div className="setting-row__title">{title}</div>
+        {hint ? <div className="setting-row__hint">{hint}</div> : null}
+      </div>
+      {children ? <div className="setting-row__control">{children}</div> : null}
+    </div>
   );
 }
 

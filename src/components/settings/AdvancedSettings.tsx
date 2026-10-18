@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { AppConfig, Settings } from "../../lib/config";
 import { PillTrack } from "../PillTrack";
+import { HelpTip, SettingRow } from "../shared";
 
 export interface AdvancedSettingsProps {
   activeConfig: AppConfig;
@@ -19,14 +20,15 @@ export function AdvancedSettings({ activeConfig, updateSettings }: AdvancedSetti
         <span className="settings-section__title">{t("settings.captureHeader")}</span>
       </div>
 
-      <div className="osd-settings-row">
-        <span className="osd-settings-row__label">
-          {t("settings.modifierStaleGcLabel")}
-          <span className="field__hint" title={t("settings.modifierStaleGcHelp")}>
-            ?
-          </span>
-        </span>
-        <p className="panel__muted help-caption">{t("settings.modifierStaleGcCaption")}</p>
+      <SettingRow
+        title={
+          <>
+            {t("settings.modifierStaleGcLabel")}
+            <HelpTip text={t("settings.modifierStaleGcHelp")} />
+          </>
+        }
+        hint={t("settings.modifierStaleGcCaption")}
+      >
         <PillTrack
           items={[1000, 3000, 5000, 10000].map((ms) => ({
             key: String(ms),
@@ -37,16 +39,17 @@ export function AdvancedSettings({ activeConfig, updateSettings }: AdvancedSetti
             updateSettings({ modifierStaleGcMs: Number(k) === 5000 ? undefined : Number(k) })
           }
         />
-      </div>
+      </SettingRow>
 
-      <div className="osd-settings-row">
-        <span className="osd-settings-row__label">
-          {t("settings.replayedForceReleaseLabel")}
-          <span className="field__hint" title={t("settings.replayedForceReleaseHelp")}>
-            ?
-          </span>
-        </span>
-        <p className="panel__muted help-caption">{t("settings.replayedForceReleaseCaption")}</p>
+      <SettingRow
+        title={
+          <>
+            {t("settings.replayedForceReleaseLabel")}
+            <HelpTip text={t("settings.replayedForceReleaseHelp")} />
+          </>
+        }
+        hint={t("settings.replayedForceReleaseCaption")}
+      >
         <PillTrack
           items={[5000, 15000, 30000, 60000].map((ms) => ({
             key: String(ms),
@@ -59,7 +62,7 @@ export function AdvancedSettings({ activeConfig, updateSettings }: AdvancedSetti
             })
           }
         />
-      </div>
+      </SettingRow>
     </section>
   );
 }

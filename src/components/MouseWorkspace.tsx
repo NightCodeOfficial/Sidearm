@@ -16,7 +16,7 @@ import {
   type MouseSettings as MouseSettingsState,
 } from "../lib/onboard-mapping";
 import { PillTrack } from "./PillTrack";
-import { Notice, Toggle } from "./shared";
+import { Notice, SelectField, SettingRow, Toggle } from "./shared";
 
 export interface MouseWorkspaceProps {
   activeConfig: AppConfig;
@@ -96,21 +96,19 @@ export function MouseWorkspace({
   return (
     <div className="settings-shell__content">
       <section className="settings-section">
-        <div className="settings-section__header">
-          <span className="settings-section__title">{t("mouse.profilePicker")}</span>
-        </div>
-        <PillTrack
-          items={profiles.map((profile) => ({
-            key: profile.id,
-            label:
-              profile.id === runtimeProfileId
-                ? t("mouse.profileActiveNow", { name: profile.name })
-                : profile.name,
-          }))}
-          active={activeProfile?.id ?? ""}
-          onSelect={(id) => setSelectedProfileId(id)}
-        />
-        <p className="panel__muted help-caption mt-8">{t("mouse.profilePickerHelp")}</p>
+        <SettingRow title={t("mouse.profilePicker")} hint={t("mouse.profilePickerHelp")}>
+          <PillTrack
+            items={profiles.map((profile) => ({
+              key: profile.id,
+              label:
+                profile.id === runtimeProfileId
+                  ? t("mouse.profileActiveNow", { name: profile.name })
+                  : profile.name,
+            }))}
+            active={activeProfile?.id ?? ""}
+            onSelect={(id) => setSelectedProfileId(id)}
+          />
+        </SettingRow>
       </section>
 
       {activeProfile ? (
@@ -140,9 +138,7 @@ export function MouseWorkspace({
 
           {overrides ? (
             <>
-              <div className="osd-settings-row mt-12">
-                <span className="osd-settings-row__label">{t("mouse.pollRate")}</span>
-                <p className="panel__muted help-caption">{t("mouse.pollRateCaption")}</p>
+              <SettingRow title={t("mouse.pollRate")} hint={t("mouse.pollRateCaption")}>
                 <PillTrack
                   items={MOUSE_POLL_RATES.map((hz) => ({
                     key: String(hz),
@@ -155,29 +151,26 @@ export function MouseWorkspace({
                     applyNow(() => setMousePollRate(hz));
                   }}
                 />
-              </div>
-
-              <div className="osd-settings-row mt-12">
-                <label className="field">
-                  <span className="field__label">{t("mouse.dpi")}</span>
-                  <div className="input-suffix">
-                    <input
-                      type="number"
-                      min={MOUSE_DPI_MIN}
-                      max={MOUSE_DPI_MAX}
-                      step={50}
-                      value={dpiDraft}
-                      onChange={(e) => setDpiDraft(e.target.value)}
-                    />
-                    <span className="input-suffix__unit">{t("mouse.dpiUnit")}</span>
-                  </div>
-                </label>
-                <p className="panel__muted help-caption">
-                  {t("mouse.dpiCaption", { min: MOUSE_DPI_MIN, max: MOUSE_DPI_MAX })}
-                </p>
+              </SettingRow>
+              <SettingRow
+                title={t("mouse.dpi")}
+                hint={t("mouse.dpiCaption", { min: MOUSE_DPI_MIN, max: MOUSE_DPI_MAX })}
+              >
+                <div className="input-suffix input-suffix--compact">
+                  <input
+                    type="number"
+                    min={MOUSE_DPI_MIN}
+                    max={MOUSE_DPI_MAX}
+                    step={50}
+                    value={dpiDraft}
+                    aria-label={t("mouse.dpi")}
+                    onChange={(e) => setDpiDraft(e.target.value)}
+                  />
+                  <span className="input-suffix__unit">{t("mouse.dpiUnit")}</span>
+                </div>
                 <button
                   type="button"
-                  className="action-button action-button--secondary action-button--small mt-8"
+                  className="action-button action-button--secondary action-button--small"
                   onClick={() => {
                     saveProfile({ mouseDpi: dpiValue, mousePollRateHz: profilePoll });
                     applyNow(() => setMouseDpi(dpiValue));
@@ -186,35 +179,46 @@ export function MouseWorkspace({
                 >
                   {t("mouse.apply")}
                 </button>
-              </div>
+              </SettingRow>
             </>
           ) : null}
         </section>
       ) : null}
 
       <section className="settings-section">
-        <div className="settings-section__header">
-          <span className="settings-section__title">{t("mouse.batteryHeader")}</span>
-          <div className="settings-section__master">
-            <span className="settings-section__master-label">{t("mouse.batteryInTray")}</span>
-            <Toggle
-              checked={activeConfig.settings.showBatteryInTray ?? false}
-              onChange={(checked) =>
-                updateDraft((config) => ({
-                  ...config,
-                  settings: { ...config.settings, showBatteryInTray: checked || undefined },
-                }))
-              }
-              ariaLabel={t("mouse.batteryInTray")}
-            />
-          </div>
-        </div>
-        <p className="panel__muted help-sm">{t("mouse.batteryHelp")}</p>
-        {device ? (
-          <p className="mt-8">
+        <SettingRow title={t("mouse.offlineHeader")} hint={t("mouse.offlineHelp")}>
+          <SelectField
+            ariaLabel={t("mouse.offlineHeader")}
+            value={activeConfig.settings.offlineProfileId ?? ""}
+            options={[
+              { value: "", label: t("mouse.offlineActive") },
+              ...profiles.map((profile) => ({ value: profile.id, label: profile.name })),
+            ]}
+            onChange={(id) =>
+              updateDraft((config) => ({
+                ...config,
+                settings: { ...config.settings, offlineProfileId: id || undefined },
+              }))
+            }
+          />
+        </SettingRow>
+        <SettingRow title={t("mouse.batteryHeader")} hint={t("mouse.batteryHelp")}>
+          {device ? (
             <strong>{t("mouse.batteryValue", { percent: device.batteryPercent })}</strong>
-          </p>
-        ) : null}
+          ) : null}
+        </SettingRow>
+        <SettingRow title={t("mouse.batteryInTray")} sub>
+          <Toggle
+            checked={activeConfig.settings.showBatteryInTray ?? false}
+            onChange={(checked) =>
+              updateDraft((config) => ({
+                ...config,
+                settings: { ...config.settings, showBatteryInTray: checked || undefined },
+              }))
+            }
+            ariaLabel={t("mouse.batteryInTray")}
+          />
+        </SettingRow>
         {error ? (
           <Notice variant="warning" className="mt-12">
             <p>{t("mouse.unavailable")}</p>

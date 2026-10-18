@@ -81,6 +81,8 @@ export interface Settings {
   hypershiftTrigger?: HypershiftTrigger;
   /** Draw the mouse battery level as a badge on the tray icon. */
   showBatteryInTray?: boolean;
+  /** Profile written into the mouse on exit; absent = the one in effect then. */
+  offlineProfileId?: string;
 }
 
 export interface Profile {

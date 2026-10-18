@@ -102,12 +102,16 @@ pub fn offline_records(config: &AppConfig, profile_id: &str) -> Vec<OfflineRecor
 /// The firmware form of an action, when it has one.
 fn onboard_action(payload: &ActionPayload) -> Option<OnboardAction> {
     match payload {
-        ActionPayload::Shortcut(shortcut) if !shortcut.key.trim().is_empty() => {
-            let key = crate::hotkeys::parse_primary_key(&shortcut.key).ok()?;
-            Some(OnboardAction::Key {
-                modifier: modifier_mask(shortcut.ctrl, shortcut.shift, shortcut.alt, shortcut.win),
-                usage: hid_usage_for_vk(key.code)?,
-            })
+        ActionPayload::Shortcut(shortcut) => {
+            let modifier = modifier_mask(shortcut.ctrl, shortcut.shift, shortcut.alt, shortcut.win);
+            // Modifier-only (push-to-talk Alt+Shift): usage 0 = no key, the
+            // firmware holds just the modifiers while the button is down.
+            let usage = if shortcut.key.trim().is_empty() {
+                0
+            } else {
+                hid_usage_for_vk(crate::hotkeys::parse_primary_key(&shortcut.key).ok()?.code)?
+            };
+            (modifier != 0 || usage != 0).then_some(OnboardAction::Key { modifier, usage })
         }
         ActionPayload::MouseAction(mouse) if !(mouse.ctrl || mouse.shift || mouse.alt || mouse.win) => {
             Some(OnboardAction::Mouse(match mouse.action {
@@ -213,7 +217,12 @@ mod tests {
             onboard_action(&shortcut("Delete", false, false)),
             Some(OnboardAction::Key { modifier: 0, usage: 0x4c })
         );
-        assert_eq!(onboard_action(&shortcut("", true, false)), None, "modifier-only");
+        assert_eq!(
+            onboard_action(&shortcut("", true, true)),
+            Some(OnboardAction::Key { modifier: 0x03, usage: 0 }),
+            "modifier-only is held as bare modifiers"
+        );
+        assert_eq!(onboard_action(&shortcut("", false, false)), None, "empty shortcut");
         let back = ActionPayload::MouseAction(MouseActionPayload {
             action: MouseActionKind::MouseBack,
             ctrl: false,

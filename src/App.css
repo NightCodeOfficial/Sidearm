@@ -608,7 +608,7 @@ select::checkmark {
 .mono-sm { font-family: var(--font-mono); font-size: 0.78rem; }
 .help-sm { font-size: 0.78rem; margin-bottom: 12px; }
 .help-sm-y { font-size: 0.78rem; margin: 12px 0; }
-.autostart-row--disabled { opacity: 0.5; }
+.setting-row--disabled { opacity: 0.5; }
 .osd-settings-grid--disabled { opacity: 0.4; pointer-events: none; }
 
 /* OSD preview alignment (enumerated → data-attributes) */
@@ -1550,41 +1550,55 @@ input[type="radio"] {
 }
 
 /* ── Autostart rows in Settings ── */
-.autostart-row {
+.setting-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
-  gap: 16px;
+  gap: 8px 24px;
   padding: 8px 0;
 }
 
-.autostart-row + .autostart-row {
+.setting-row + .setting-row {
   border-top: 1px solid var(--c-border);
   margin-top: 4px;
   padding-top: 12px;
 }
 
-.autostart-row__main {
-  flex: 1 1 auto;
+.setting-row__main {
+  /* Below ~260px of text the control drops under the text instead of
+     squeezing it into a narrow column. */
+  flex: 1 1 260px;
   min-width: 0;
 }
 
-.autostart-row__title {
+.setting-row__title {
   font-weight: 500;
   margin-bottom: 4px;
 }
 
-.autostart-row__hint {
+.setting-row__hint {
   font-size: 0.78rem;
   color: var(--c-text-muted);
   line-height: 1.4;
 }
 
-.autostart-row__control {
+.setting-row__control {
   flex: 0 0 auto;
   padding-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.autostart-row--sub {
+.setting-row__control .pill-track {
+  min-width: 300px;
+}
+
+.input-suffix--compact {
+  width: 150px;
+}
+
+.setting-row--sub {
   padding-left: 16px;
   border-left: 2px solid var(--c-accent-dim);
 }
@@ -5442,6 +5456,9 @@ img.profiles__app-card-monogram {
   flex-direction: column;
   gap: var(--space-lg);
   min-width: 0;
+  /* Settings read as a column: past this width lines get too long to scan. */
+  width: 100%;
+  max-width: 920px;
 }
 
 /* Narrow width: rail collapses to a horizontal strip above the content. */
@@ -5558,7 +5575,8 @@ input[type="search"]::-webkit-search-decoration {
 }
 
 /* Opts into the canonical recipe; only its max width is unique. */
-.settings-text-input { max-width: 360px; }
+.settings-text-input { width: 260px; max-width: 100%; }
+.settings-number-input { width: 110px; }
 
 /* Profile cards in settings */
 .settings-profile-list {
@@ -5699,20 +5717,6 @@ input[type="search"]::-webkit-search-decoration {
   gap: 14px;
   transition: opacity 0.15s;
 }
-
-.osd-settings-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.osd-settings-row__label {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--c-text-muted);
-  letter-spacing: 0.02em;
-}
-
 
 .osd-preview-area {
   display: flex;

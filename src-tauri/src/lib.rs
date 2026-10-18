@@ -2751,10 +2751,13 @@ fn write_offline_mouse_profile(app: &AppHandle) {
         return;
     };
     let store = app.state::<Arc<Mutex<RuntimeStore>>>();
-    let profile_id = store
-        .lock()
-        .ok()
-        .and_then(|store| store.last_active_profile_id().map(str::to_owned))
+    let chosen = config
+        .settings
+        .offline_profile_id
+        .clone()
+        .filter(|id| config.profiles.iter().any(|p| &p.id == id));
+    let profile_id = chosen
+        .or_else(|| store.lock().ok().and_then(|store| store.last_active_profile_id().map(str::to_owned)))
         .unwrap_or_else(|| config.settings.fallback_profile_id.clone());
     mouse_offline::write_offline_profile(&config, &profile_id, &config_dir);
 }

@@ -271,6 +271,10 @@ pub struct Settings {
     /// Draw the mouse battery level as a badge on the tray icon.
     #[serde(default)]
     pub show_battery_in_tray: bool,
+    /// Profile written into the mouse on exit for use without Sidearm;
+    /// `None` = the profile in effect at that moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offline_profile_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1950,6 +1954,7 @@ pub(crate) fn default_seed_config() -> AppConfig {
             onboarding_step: None,
             hypershift_trigger: default_hypershift_trigger(),
             show_battery_in_tray: false,
+            offline_profile_id: None,
         },
         profiles: seed_profiles(),
         devices: vec![builtin_naga_device()],

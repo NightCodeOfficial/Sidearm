@@ -14,7 +14,7 @@ import {
 } from "../../lib/action-picker-helpers";
 import { CaptureRow } from "../action-picker/shared/CaptureRow";
 import { PillTrack } from "../PillTrack";
-import { Notice, Toggle } from "../shared";
+import { Notice, SelectField, SettingRow, Toggle } from "../shared";
 import { useAutostartStatus } from "./useAutostartStatus";
 
 export interface AppSettingsProps {
@@ -73,44 +73,36 @@ export function AppSettings({
           <span className="settings-section__title">{t("settings.autostartHeader")}</span>
         </div>
 
-        <div className="autostart-row">
-          <div className="autostart-row__main">
-            <div className="autostart-row__title">{t("settings.autostartRunAtLogonTitle")}</div>
-            <div className="autostart-row__hint">
-              {t("settings.autostartRunAtLogonHint")}
-            </div>
-          </div>
-          <div className="autostart-row__control">
-            <Toggle
-              checked={runAtLogon}
-              onChange={(checked) => void handleRunAtLogonToggle(checked)}
-              disabled={autostartBusy}
-              ariaLabel={t("settings.autostartRunAtLogonTitle")}
-            />
-          </div>
-        </div>
+        <SettingRow
+          title={t("settings.autostartRunAtLogonTitle")}
+          hint={t("settings.autostartRunAtLogonHint")}
+        >
+          <Toggle
+            checked={runAtLogon}
+            onChange={(checked) => void handleRunAtLogonToggle(checked)}
+            disabled={autostartBusy}
+            ariaLabel={t("settings.autostartRunAtLogonTitle")}
+          />
+        </SettingRow>
 
         {adminAutostart?.supported && (
-          <div
-            className={`autostart-row autostart-row--sub${runAtLogon ? "" : " autostart-row--disabled"}`}
+          <SettingRow
+            title={t("settings.autostartAdminTitle")}
+            hint={
+              runAtLogon
+                ? t("settings.autostartAdminHintEnabled")
+                : t("settings.autostartAdminHintDisabled")
+            }
+            sub
+            disabled={!runAtLogon}
           >
-            <div className="autostart-row__main">
-              <div className="autostart-row__title">{t("settings.autostartAdminTitle")}</div>
-              <div className="autostart-row__hint">
-                {runAtLogon
-                  ? t("settings.autostartAdminHintEnabled")
-                  : t("settings.autostartAdminHintDisabled")}
-              </div>
-            </div>
-            <div className="autostart-row__control">
-              <Toggle
-                checked={adminAutostart.enabled}
-                onChange={(checked) => void handleRunAsAdminToggle(checked)}
-                disabled={autostartBusy || !runAtLogon}
-                ariaLabel={t("settings.autostartAdminTitle")}
-              />
-            </div>
-          </div>
+            <Toggle
+              checked={adminAutostart.enabled}
+              onChange={(checked) => void handleRunAsAdminToggle(checked)}
+              disabled={autostartBusy || !runAtLogon}
+              ariaLabel={t("settings.autostartAdminTitle")}
+            />
+          </SettingRow>
         )}
 
         {adminAutostart?.enabled && adminAutostart.pathMismatch && (
@@ -149,122 +141,79 @@ export function AppSettings({
         )}
       </section>
 
-      {/* Global shortcut */}
       <section className="settings-section">
-        <div className="settings-section__header">
-          <span className="settings-section__title">{t("settings.globalShortcutHeader")}</span>
-        </div>
-        <p className="panel__muted help-sm">{t("settings.globalShortcutHelp")}</p>
-        <div onKeyDown={handleShortcutCapture}>
-          <CaptureRow
-            value={osd.globalShortcut ?? ""}
-            placeholder={
-              capturingShortcut
-                ? t("picker.keyCapturing")
-                : t("settings.globalShortcutPlaceholder")
-            }
-            capturing={capturingShortcut}
-            onToggle={() => setCapturingShortcut(!capturingShortcut)}
-            recordLabel={t("picker.record")}
-          />
-        </div>
-      </section>
-
-      {/* Device name */}
-      <section className="settings-section">
-        <div className="settings-section__header">
-          <span className="settings-section__title">{t("settings.deviceNameHeader")}</span>
-        </div>
-        <p className="panel__muted help-sm">{t("settings.deviceNameHelp")}</p>
-        <input
-          className="settings-text-input"
-          type="text"
-          value={osd.deviceName ?? ""}
-          placeholder={t("settings.deviceNamePlaceholder")}
-          onChange={(e) => {
-            const value = e.target.value;
-            updateSettings({ deviceName: value.trim() ? value : undefined });
-          }}
-          aria-label={t("settings.deviceNameHeader")}
-        />
-      </section>
-
-      {/* Software Hypershift */}
-      <section className="settings-section">
-        <div className="settings-section__header">
-          <span className="settings-section__title">{t("settings.hypershiftHeader")}</span>
-        </div>
-        <p className="panel__muted help-sm">{t("settings.hypershiftHelp")}</p>
-        <div className="osd-settings-row">
-          <span className="osd-settings-row__label">
-            {t("settings.hypershiftTriggerLabel")}
-          </span>
-          <PillTrack<HypershiftTrigger>
-            items={[
-              { key: "mouse_right", label: t("settings.hypershiftMouseRight") },
-              { key: "mouse_left", label: t("settings.hypershiftMouseLeft") },
-              { key: "wheel_click", label: t("settings.hypershiftWheelClick") },
-              { key: "mouse_4", label: t("settings.hypershiftMouse4") },
-              { key: "mouse_5", label: t("settings.hypershiftMouse5") },
-              { key: "none", label: t("settings.hypershiftOff") },
-            ]}
-            active={osd.hypershiftTrigger ?? "mouse_right"}
-            onSelect={(trigger) => updateSettings({ hypershiftTrigger: trigger })}
-          />
-        </div>
-      </section>
-
-      {/* Language selector */}
-      <section className="settings-section">
-        <div className="settings-section__header">
-          <span className="settings-section__title">{t("settings.languageHeader")}</span>
-        </div>
-        <div className="settings-actions">
-          <button
-            type="button"
-            aria-pressed={i18n.language === "ru"}
-            className={`action-button action-button--small${i18n.language === "ru" ? " action-button--active" : " action-button--ghost"}`}
-            onClick={() => changeLanguage("ru")}
-          >
-            Русский
-          </button>
-          <button
-            type="button"
-            aria-pressed={i18n.language === "en"}
-            className={`action-button action-button--small${i18n.language === "en" ? " action-button--active" : " action-button--ghost"}`}
-            onClick={() => changeLanguage("en")}
-          >
-            English
-          </button>
-        </div>
-      </section>
-
-      {/* Clipboard repair (OSC 52 mojibake workaround) */}
-      <section className="settings-section">
-        <div className="settings-section__header">
-          <span className="settings-section__title">{t("settings.repairClipboardHeader")}</span>
-          <label className="settings-section__master">
-            <span className="settings-section__master-label">{t("settings.sectionEnableLabel")}</span>
-            <Toggle
-              checked={osd.repairClipboardOnCopy ?? false}
-              onChange={(checked) => updateSettings({ repairClipboardOnCopy: checked })}
-              ariaLabel={t("settings.repairClipboardHeader")}
+        <SettingRow title={t("settings.globalShortcutHeader")} hint={t("settings.globalShortcutHelp")}>
+          <div onKeyDown={handleShortcutCapture}>
+            <CaptureRow
+              value={osd.globalShortcut ?? ""}
+              placeholder={
+                capturingShortcut
+                  ? t("picker.keyCapturing")
+                  : t("settings.globalShortcutPlaceholder")
+              }
+              capturing={capturingShortcut}
+              onToggle={() => setCapturingShortcut(!capturingShortcut)}
+              recordLabel={t("picker.record")}
             />
-          </label>
-        </div>
-        <p className="panel__muted help-sm">{t("settings.repairClipboardHelp")}</p>
+          </div>
+        </SettingRow>
+
+        <SettingRow title={t("settings.deviceNameHeader")} hint={t("settings.deviceNameHelp")}>
+          <input
+            className="settings-text-input"
+            type="text"
+            value={osd.deviceName ?? ""}
+            placeholder={t("settings.deviceNamePlaceholder")}
+            onChange={(e) => {
+              const value = e.target.value;
+              updateSettings({ deviceName: value.trim() ? value : undefined });
+            }}
+            aria-label={t("settings.deviceNameHeader")}
+          />
+        </SettingRow>
+
+        <SettingRow title={t("settings.languageHeader")}>
+          <PillTrack
+            items={[
+              { key: "ru", label: "Русский" },
+              { key: "en", label: "English" },
+            ]}
+            active={i18n.language === "en" ? "en" : "ru"}
+            onSelect={(lang) => changeLanguage(lang)}
+          />
+        </SettingRow>
       </section>
 
-      {/* Onboarding re-run */}
       <section className="settings-section">
-        <div className="settings-section__header">
-          <span className="settings-section__title">{t("settings.onboardingHeader")}</span>
-        </div>
-        <p className="panel__muted help-sm">{t("settings.onboardingHelp")}</p>
-        <div className="settings-actions">
+        <SettingRow title={t("settings.hypershiftHeader")} hint={t("settings.hypershiftHelp")}>
+          <SelectField<HypershiftTrigger>
+            ariaLabel={t("settings.hypershiftTriggerLabel")}
+            value={osd.hypershiftTrigger ?? "mouse_right"}
+            options={[
+              { value: "mouse_right", label: t("settings.hypershiftMouseRight") },
+              { value: "mouse_left", label: t("settings.hypershiftMouseLeft") },
+              { value: "wheel_click", label: t("settings.hypershiftWheelClick") },
+              { value: "mouse_4", label: t("settings.hypershiftMouse4") },
+              { value: "mouse_5", label: t("settings.hypershiftMouse5") },
+              { value: "none", label: t("settings.hypershiftOff") },
+            ]}
+            onChange={(trigger) => updateSettings({ hypershiftTrigger: trigger })}
+          />
+        </SettingRow>
+
+        {/* Clipboard repair (OSC 52 mojibake workaround) */}
+        <SettingRow title={t("settings.repairClipboardHeader")} hint={t("settings.repairClipboardHelp")}>
+          <Toggle
+            checked={osd.repairClipboardOnCopy ?? false}
+            onChange={(checked) => updateSettings({ repairClipboardOnCopy: checked })}
+            ariaLabel={t("settings.repairClipboardHeader")}
+          />
+        </SettingRow>
+
+        <SettingRow title={t("settings.onboardingHeader")} hint={t("settings.onboardingHelp")}>
           <button
             type="button"
-            className="action-button action-button--secondary"
+            className="action-button action-button--secondary action-button--small"
             onClick={() => {
               updateDraft((c) => ({
                 ...c,
@@ -274,7 +223,7 @@ export function AppSettings({
           >
             {t("settings.rerunOnboarding")}
           </button>
-        </div>
+        </SettingRow>
       </section>
     </>
   );

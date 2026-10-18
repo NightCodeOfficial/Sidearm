@@ -6,7 +6,7 @@ import type {
   Profile,
   Settings,
 } from "../../lib/config";
-import { Toggle } from "../shared";
+import { SettingRow, Toggle } from "../shared";
 import { PillTrack } from "../PillTrack";
 import { CornerPicker } from "./CornerPicker";
 
@@ -78,54 +78,48 @@ export function NotificationSettings({
           </div>
         </div>
 
-        {/* Duration */}
-        <div className="osd-settings-row">
-          <span className="osd-settings-row__label">{t("settings.osdDuration")}</span>
-          <PillTrack
-            items={[1000, 1500, 2000, 3000, 5000].map((ms) => ({
-              key: String(ms),
-              label: t("settings.osdDurationSeconds", { seconds: ms / 1000 }),
-            }))}
-            active={String(osd.osdDurationMs)}
-            onSelect={(k) => updateSettings({ osdDurationMs: Number(k) })}
-          />
-        </div>
+        <div>
+          <SettingRow title={t("settings.osdDuration")}>
+            <PillTrack
+              items={[1000, 1500, 2000, 3000, 5000].map((ms) => ({
+                key: String(ms),
+                label: t("settings.osdDurationSeconds", { seconds: ms / 1000 }),
+              }))}
+              active={String(osd.osdDurationMs)}
+              onSelect={(k) => updateSettings({ osdDurationMs: Number(k) })}
+            />
+          </SettingRow>
 
-        {/* Position — 2×2 corner picker */}
-        <div className="osd-settings-row">
-          <span className="osd-settings-row__label">{t("settings.osdPosition")}</span>
-          <CornerPicker
-            value={osd.osdPosition}
-            onSelect={(position) => updateSettings({ osdPosition: position })}
-          />
-        </div>
+          <SettingRow title={t("settings.osdPosition")}>
+            <CornerPicker
+              value={osd.osdPosition}
+              onSelect={(position) => updateSettings({ osdPosition: position })}
+            />
+          </SettingRow>
 
-        {/* Font size */}
-        <div className="osd-settings-row">
-          <span className="osd-settings-row__label">{t("settings.osdFontSize")}</span>
-          <PillTrack
-            items={[
-              { key: "small", label: t("settings.osdFontSmall") },
-              { key: "medium", label: t("settings.osdFontMedium") },
-              { key: "large", label: t("settings.osdFontLarge") },
-            ]}
-            active={osd.osdFontSize}
-            onSelect={(k) => updateSettings({ osdFontSize: k as OsdFontSize })}
-          />
-        </div>
+          <SettingRow title={t("settings.osdFontSize")}>
+            <PillTrack
+              items={[
+                { key: "small", label: t("settings.osdFontSmall") },
+                { key: "medium", label: t("settings.osdFontMedium") },
+                { key: "large", label: t("settings.osdFontLarge") },
+              ]}
+              active={osd.osdFontSize}
+              onSelect={(k) => updateSettings({ osdFontSize: k as OsdFontSize })}
+            />
+          </SettingRow>
 
-        {/* Animation */}
-        <div className="osd-settings-row">
-          <span className="osd-settings-row__label">{t("settings.osdAnimation")}</span>
-          <PillTrack
-            items={[
-              { key: "slideIn", label: t("settings.osdAnimSlideIn") },
-              { key: "fadeIn", label: t("settings.osdAnimFadeIn") },
-              { key: "none", label: t("settings.osdAnimNone") },
-            ]}
-            active={osd.osdAnimation}
-            onSelect={(k) => updateSettings({ osdAnimation: k as OsdAnimation })}
-          />
+          <SettingRow title={t("settings.osdAnimation")}>
+            <PillTrack
+              items={[
+                { key: "slideIn", label: t("settings.osdAnimSlideIn") },
+                { key: "fadeIn", label: t("settings.osdAnimFadeIn") },
+                { key: "none", label: t("settings.osdAnimNone") },
+              ]}
+              active={osd.osdAnimation}
+              onSelect={(k) => updateSettings({ osdAnimation: k as OsdAnimation })}
+            />
+          </SettingRow>
         </div>
       </div>
     </section>
