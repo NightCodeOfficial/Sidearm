@@ -81,7 +81,9 @@ export function Sidebar({
           onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
         />
         <div className="sidebar__brand-text">
-          <span>{t("app.name")}</span>
+          <span>
+            {t("app.name")} <span className="sidebar__version">v{__APP_VERSION__}</span>
+          </span>
           <strong>{activeConfig?.settings?.deviceName ?? t("app.deviceFallback")}</strong>
         </div>
       </div>

@@ -503,6 +503,8 @@
     "descriptionPlaceholder": "Optional description",
     "unnamed": "Unnamed profile",
     "renamedToUnnamed": "Profile name cannot be empty — renamed to “Unnamed profile”.",
+    "versionTitle": "Version",
+    "versionHint": "The installed Sidearm build. New versions are on the GitHub releases page.",
     "onboardingHeader": "Onboarding",
     "rerunOnboarding": "Re-run onboarding",
     "onboardingHelp": "Open the setup wizard again to review hardware and configuration steps.",

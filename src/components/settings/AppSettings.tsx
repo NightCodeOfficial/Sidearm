@@ -210,6 +210,10 @@ export function AppSettings({
           />
         </SettingRow>
 
+        <SettingRow title={t("settings.versionTitle")} hint={t("settings.versionHint")}>
+          <strong>v{__APP_VERSION__}</strong>
+        </SettingRow>
+
         <SettingRow title={t("settings.onboardingHeader")} hint={t("settings.onboardingHelp")}>
           <button
             type="button"
