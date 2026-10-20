@@ -27,9 +27,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::mouse_memory::{OnboardBinding, VendorDevice, MODE_NORMAL};
 use crate::runtime::RuntimeStore;
 
-/// Vendor and product id of the built-in Naga.
-const VID: u16 = 0x1532;
-const PID: u16 = 0x00B4;
 /// Regular poll period. The queries are read-only and answered in milliseconds.
 const POLL_INTERVAL: Duration = Duration::from_secs(20);
 /// Poll period while a takeover is likely or a check could not run: the mouse
@@ -136,7 +133,7 @@ pub fn apply_profile_mouse_settings(profile: &crate::config::Profile) {
     std::thread::Builder::new()
         .name("profile-mouse".into())
         .spawn(move || {
-            let result = VendorDevice::open(VID, PID).and_then(|device| {
+            let result = VendorDevice::open_connected().and_then(|device| {
                 if let Some(hz) = poll_rate_hz
                     && device.poll_rate_hz()? != hz
                 {
@@ -274,7 +271,7 @@ fn check_once(
     config_dir: &Path,
     last_notified: &mut Option<(TakeoverKind, Instant)>,
 ) -> Verdict {
-    let Ok(device) = VendorDevice::open(VID, PID) else {
+    let Ok(device) = VendorDevice::open_connected() else {
         // No mouse, or its collection is not openable right now.
         return Verdict::Unreadable;
     };

@@ -5,6 +5,8 @@ mod chord;
 mod command_error;
 mod config;
 #[cfg(target_os = "windows")]
+mod device_catalog;
+#[cfg(target_os = "windows")]
 mod exe_icon;
 mod executor;
 mod hotkeys;
@@ -2682,7 +2684,7 @@ async fn apply_onboard_mapping(
     bindings: Vec<mouse_memory::OnboardBinding>,
 ) -> Result<(), CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let device = mouse_memory::VendorDevice::open(0x1532, 0x00B4)
+        let device = mouse_memory::VendorDevice::open_connected()
             .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))?;
         device
             .apply_bindings(&bindings)
@@ -2701,7 +2703,7 @@ async fn verify_onboard_mapping(
     bindings: Vec<mouse_memory::OnboardBinding>,
 ) -> Result<mouse_memory::OnboardReport, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let device = mouse_memory::VendorDevice::open(0x1532, 0x00B4)
+        let device = mouse_memory::VendorDevice::open_connected()
             .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))?;
         device
             .verify(&bindings)
@@ -2721,7 +2723,7 @@ async fn restore_onboard_control(app: AppHandle) -> Result<(), CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
         let config = config::read_and_migrate_config_file(&config_dir.join("config.json"))
             .map_err(CommandError::from)?;
-        let device = mouse_memory::VendorDevice::open(0x1532, 0x00B4)
+        let device = mouse_memory::VendorDevice::open_connected()
             .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))?;
         device
             .ensure_normal_mode()
@@ -2768,7 +2770,7 @@ async fn with_mouse_settings(
     work: impl FnOnce(&mouse_memory::VendorDevice) -> Result<(), String> + Send + 'static,
 ) -> Result<mouse_memory::MouseSettings, CommandError> {
     tauri::async_runtime::spawn_blocking(move || {
-        let device = mouse_memory::VendorDevice::open(0x1532, 0x00B4)
+        let device = mouse_memory::VendorDevice::open_connected()
             .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))?;
         work(&device).map_err(|msg| CommandError::new("mouse_setting_failed", msg, None))?;
         device

@@ -34,6 +34,8 @@
 //! verified with two reads and one retry.
 
 use std::io::Error;
+
+use crate::device_catalog::NativeModel;
 use std::sync::{Mutex, MutexGuard};
 
 use windows_sys::Win32::Foundation::HANDLE;
@@ -52,14 +54,6 @@ use windows_sys::Win32::Devices::HumanInterfaceDevice::HidD_SetFeature;
 pub const REPORT_ID: u8 = 0x03;
 /// Payload length on the wire (the Windows feature buffer adds the id byte).
 pub const PAYLOAD_LEN: usize = 90;
-/// First button id of the thumb column; ids run `0x40..=0x4b` for 12 buttons.
-pub const BUTTON_ID_BASE: u8 = 0x40;
-
-/// Onboard slot holding the record of each thumb button, in button-id order.
-/// Not arithmetic: this is the allocation the captured vendor traffic shows,
-/// and slot 0x1b is a spare duplicate of button 0x4b that we never write.
-const SLOT_FOR_BUTTON: [u8; 12] = [0x07, 0x1c, 0x1d, 0x1e, 0x00, 0x01,
-                                   0x02, 0x03, 0x08, 0x04, 0x05, 0x06];
 const RECORD_MARKER: [u8; 4] = [0x0a, 0x02, 0x0c, 0x01];
 /// First HID usage of the function keys the thumb column can be mapped to.
 const USAGE_F13: u8 = 0x68;
@@ -70,23 +64,6 @@ const MOD_CTRL: u8 = 0x01;
 const MOD_SHIFT: u8 = 0x02;
 const MOD_ALT: u8 = 0x04;
 const MOD_WIN: u8 = 0x08;
-/// The two top buttons hold a key record like the thumbs but have no slot in
-/// the vendor table, so they are written with [`CMD_SET_BUTTON`] (measured:
-/// `top_aux_01` read back `Alt+F23` after one write).
-const TOP_AUX_BUTTONS: [(&str, u8); 2] = [("top_aux_01", 0x0b), ("top_aux_02", 0x0c)];
-/// Buttons that must stay plain mouse buttons, as `(control id, vendor button
-/// id, mouse-button value)`. Measured by scanning every id with `GET_BUTTON`:
-/// these answered category `0x01`; every other id but the thumbs and the top
-/// buttons answered status `0x03`.
-const NATIVE_BUTTONS: [(&str, u8, u8); 7] = [
-    ("mouse_left", 0x01, 1),
-    ("mouse_right", 0x02, 2),
-    ("wheel_click", 0x03, 3),
-    ("wheel_up", 0x09, 0x09),
-    ("wheel_down", 0x0a, 0x0a),
-    ("mouse_4", 0x34, 4),
-    ("mouse_5", 0x35, 5),
-];
 /// Device mode that makes the mouse emit the records written into onboard
 /// memory — the only mode Sidearm works in.
 pub const MODE_NORMAL: u8 = 0x00;
@@ -96,9 +73,6 @@ pub const MODE_NORMAL: u8 = 0x00;
 /// [`MODE_NORMAL`] must be treated as a takeover.
 pub const MODE_DRIVER: u8 = 0x03;
 
-/// Transaction byte of the vendor command class (same value the captured
-/// Synapse traffic uses for control commands).
-const COMMAND_TX: u8 = 0x1f;
 /// Command class of the device-mode get/set commands.
 const CLASS_CONTROL: u8 = 0x00;
 /// Command class that answers button queries.
@@ -132,23 +106,6 @@ const CMD_GET_POLL_RATE: u8 = 0x85;
 /// Storage selector of DPI writes: `0x01` keeps the value in the mouse across
 /// power cycles (the device answered its stored DPI with it).
 const VARSTORE: u8 = 0x01;
-/// DPI range the UI offers (the Naga V2 HyperSpeed sensor tops out at 30 000).
-pub const DPI_MIN: u16 = 100;
-pub const DPI_MAX: u16 = 30_000;
-/// Poll rate (Hz) ↔ wire code; measured: `0x02` read back as the 500 Hz the
-/// mouse ran at, a `0x01` write read back as 1000 Hz.
-const POLL_RATES: [(u16, u8); 3] = [(1000, 0x01), (500, 0x02), (125, 0x08)];
-
-/// Wire code of a poll rate the mouse supports.
-pub fn poll_code_for_hz(hz: u16) -> Option<u8> {
-    POLL_RATES.iter().find(|(rate, _)| *rate == hz).map(|(_, code)| *code)
-}
-
-/// Poll rate (Hz) of a wire code.
-pub fn hz_for_poll_code(code: u8) -> Option<u16> {
-    POLL_RATES.iter().find(|(_, c)| *c == code).map(|(rate, _)| *rate)
-}
-
 /// Battery level 0..=255 as a rounded percentage.
 pub fn battery_percent_from_raw(raw: u8) -> u8 {
     ((u16::from(raw) * 100 + 127) / 255) as u8
@@ -170,9 +127,6 @@ const MODE_CONFIRM_WAIT: std::time::Duration = std::time::Duration::from_millis(
 /// Category byte of a button record that emits a key.
 const CATEGORY_KEY: u8 = 0x02;
 
-/// Thumb controls of the built-in Naga device: the leading slice of
-/// [`crate::config::NAGA_CONTROL_IDS`], `thumb_01` through `thumb_12`.
-const THUMB_CONTROL_COUNT: usize = 12;
 /// Registry home of device interface symbolic link names.
 const DEVICE_CLASSES: &str = r"SYSTEM\CurrentControlSet\Control\DeviceClasses";
 /// Interface class that owns the HID collections (not the HID *class* guid).
@@ -183,26 +137,18 @@ pub fn checksum(payload: &[u8; PAYLOAD_LEN]) -> u8 {
     payload[2..88].iter().fold(0u8, |acc, &byte| acc ^ byte)
 }
 
-/// Onboard slot for a thumb button id, following the vendor's own allocation.
-pub fn slot_for_button(button_id: u8) -> Option<u8> {
-    let index = button_id.checked_sub(BUTTON_ID_BASE)? as usize;
-    SLOT_FOR_BUTTON.get(index).copied()
+/// The model whose tables the config-side helpers use.
+// shortcut: the config does not name its model yet, so config-driven code
+// (`onboard_bindings`, the offline plan) assumes the only catalog entry;
+// step 2 of plans/multi-device/plan.md passes the config's model instead.
+fn config_model() -> &'static NativeModel {
+    &crate::device_catalog::NAGA_V2_HYPERSPEED
 }
 
 /// Vendor button id of a control whose onboard record emits a key: the thumbs
 /// (`thumb_01` is the first button) and the two top buttons.
 pub fn button_id_for_control(control_id: &str) -> Option<u8> {
-    if let Some(index) = crate::config::NAGA_CONTROL_IDS
-        .iter()
-        .take(THUMB_CONTROL_COUNT)
-        .position(|id| *id == control_id)
-    {
-        return Some(BUTTON_ID_BASE + index as u8);
-    }
-    TOP_AUX_BUTTONS
-        .iter()
-        .find(|(id, _)| *id == control_id)
-        .map(|(_, button_id)| *button_id)
+    config_model().button_id_for(control_id)
 }
 
 /// HID modifier mask of a hotkey's modifiers.
@@ -233,8 +179,9 @@ pub fn usage_for_key(display_name: &str) -> Option<u8> {
 /// accepted — keys no application uses, so the mouse can never fire a real
 /// shortcut on its own. Shared by the write path and the drift check so both
 /// agree on what "this binding is in place" means.
-fn binding_target(binding: &OnboardBinding) -> Result<(u8, u8, u8), String> {
-    let button_id = button_id_for_control(&binding.control_id)
+fn binding_target(model: &NativeModel, binding: &OnboardBinding) -> Result<(u8, u8, u8), String> {
+    let button_id = model
+        .button_id_for(&binding.control_id)
         .ok_or_else(|| format!("{} has no onboard key record", binding.control_id))?;
     let spec = crate::hotkeys::parse_hotkey(&binding.encoded_key)?;
     let usage = usage_for_key(&spec.key.display_name)
@@ -402,7 +349,7 @@ impl ButtonRecord {
 /// Every button that must stay a plain mouse button, as `(control id, vendor
 /// button id, value)`.
 pub fn native_buttons() -> &'static [(&'static str, u8, u8)] {
-    &NATIVE_BUTTONS
+    config_model().native_buttons
 }
 
 /// Open handle to the vendor HID collection plus the feature-report plumbing.
@@ -414,18 +361,34 @@ pub struct VendorDevice {
     /// is the profile `0x01`, as "device stayed in mode 0x01", and the guard
     /// reported a rewritten button that was not). One user at a time.
     _exclusive: MutexGuard<'static, ()>,
+    model: &'static NativeModel,
 }
 
 /// Serializes every [`VendorDevice`] in this process.
 static DEVICE_LOCK: Mutex<()> = Mutex::new(());
 
 impl VendorDevice {
-    /// Opens the vendor collection of `vid:pid`, discovering its interface path
-    /// in the registry. Returns `Err(String)` with an OS-error description.
-    pub fn open(vid: u16, pid: u16) -> Result<Self, String> {
+    /// Opens the vendor collection of the first catalog model found in the
+    /// registry. `Err` carries the last model's failure.
+    pub fn open_connected() -> Result<Self, String> {
+        let mut last_error = "no natively supported mouse in the catalog".to_string();
+        for model in crate::device_catalog::CATALOG {
+            for pid in model.pids {
+                match Self::open(model, *pid) {
+                    Ok(device) => return Ok(device),
+                    Err(error) => last_error = format!("{}: {error}", model.name),
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    /// Opens the vendor collection of `model` under `pid`, discovering its
+    /// interface path in the registry. `Err` carries an OS-error description.
+    fn open(model: &'static NativeModel, pid: u16) -> Result<Self, String> {
         // A panic mid-exchange leaves no state behind the lock worth refusing for.
         let exclusive = DEVICE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let path = find_interface_path(vid, pid)?;
+        let path = find_interface_path(model.vid, pid)?;
         let mut wide: Vec<u16> = path.encode_utf16().collect();
         wide.push(0);
         // No requested rights: the vendor collection is held by Razer's driver
@@ -444,13 +407,13 @@ impl VendorDevice {
         if handle == INVALID_HANDLE_VALUE {
             return Err(format!("{}: CreateFileW({path})", Error::last_os_error()));
         }
-        Ok(Self { handle, _exclusive: exclusive })
+        Ok(Self { handle, _exclusive: exclusive, model })
     }
 
     /// Writes one button record into its slot and verifies it read back.
     /// `Err` means the mouse did not echo what we wrote.
     pub fn write_button(&self, button_id: u8, usage: u8, modifier: u8) -> Result<(), String> {
-        let Some(slot) = slot_for_button(button_id) else {
+        let Some(slot) = self.model.slot_for(button_id) else {
             return self.write_key_command(button_id, modifier, usage);
         };
         let payload = build_record(slot, button_id, usage, modifier);
@@ -483,7 +446,7 @@ impl VendorDevice {
     /// [`Self::drifted_bindings`]: they were never the mouse's job.
     pub fn apply_bindings(&self, bindings: &[OnboardBinding]) -> Result<(), String> {
         for binding in bindings {
-            let Ok((button_id, modifier, usage)) = binding_target(binding) else {
+            let Ok((button_id, modifier, usage)) = binding_target(self.model, binding) else {
                 continue;
             };
             self.write_button(button_id, usage, modifier)?;
@@ -499,7 +462,7 @@ impl VendorDevice {
     pub fn verify(&self, bindings: &[OnboardBinding]) -> Result<OnboardReport, String> {
         let mut report = OnboardReport::default();
         for binding in bindings {
-            let Ok((button_id, modifier, usage)) = binding_target(binding) else {
+            let Ok((button_id, modifier, usage)) = binding_target(self.model, binding) else {
                 continue;
             };
             if self.write_button(button_id, usage, modifier).is_ok() {
@@ -597,8 +560,9 @@ impl VendorDevice {
 
     /// Stores `dpi` for both axes in the mouse and requires it to read back.
     pub fn set_dpi(&self, dpi: u16) -> Result<(), String> {
-        if !(DPI_MIN..=DPI_MAX).contains(&dpi) {
-            return Err(format!("DPI {dpi} is outside {DPI_MIN}..={DPI_MAX}"));
+        let (min, max) = (self.model.dpi_min, self.model.dpi_max);
+        if !(min..=max).contains(&dpi) {
+            return Err(format!("DPI {dpi} is outside {min}..={max}"));
         }
         let [hi, lo] = dpi.to_be_bytes();
         self.command(CLASS_DPI, CMD_SET_DPI, &[VARSTORE, hi, lo, hi, lo, 0x00, 0x00])?;
@@ -611,12 +575,13 @@ impl VendorDevice {
     /// Current poll rate in Hz.
     pub fn poll_rate_hz(&self) -> Result<u16, String> {
         let reply = self.command(CLASS_CONTROL, CMD_GET_POLL_RATE, &[0x00])?;
-        hz_for_poll_code(reply[8]).ok_or_else(|| format!("unknown poll rate code {:#04x}", reply[8]))
+        self.model
+            .hz_for_poll_code(reply[8]).ok_or_else(|| format!("unknown poll rate code {:#04x}", reply[8]))
     }
 
     /// Sets the poll rate and requires it to read back.
     pub fn set_poll_rate_hz(&self, hz: u16) -> Result<(), String> {
-        let code = poll_code_for_hz(hz).ok_or_else(|| format!("unsupported poll rate {hz} Hz"))?;
+        let code = self.model.poll_code_for_hz(hz).ok_or_else(|| format!("unsupported poll rate {hz} Hz"))?;
         self.command(CLASS_CONTROL, CMD_SET_POLL_RATE, &[code])?;
         match self.poll_rate_hz()? {
             read if read == hz => Ok(()),
@@ -646,7 +611,7 @@ impl VendorDevice {
     /// Puts every listed native control back to its plain mouse button; `Err`
     /// names the first one the device did not confirm.
     pub fn restore_native_buttons(&self, control_ids: &[&str]) -> Result<(), String> {
-        for (control_id, button_id, value) in NATIVE_BUTTONS {
+        for &(control_id, button_id, value) in self.model.native_buttons {
             if control_ids.contains(&control_id) {
                 self.restore_native_button(button_id, value)
                     .map_err(|error| format!("{control_id}: {error}"))?;
@@ -694,7 +659,7 @@ impl VendorDevice {
     pub fn drifted_bindings(&self, bindings: &[OnboardBinding]) -> Result<Vec<String>, String> {
         let mut drifted = Vec::new();
         for binding in bindings {
-            let Ok((button_id, modifier, usage)) = binding_target(binding) else {
+            let Ok((button_id, modifier, usage)) = binding_target(self.model, binding) else {
                 continue;
             };
             if self.holds(button_id, modifier, usage)? {
@@ -708,11 +673,11 @@ impl VendorDevice {
         Ok(drifted)
     }
 
-    /// Control ids of [`NATIVE_BUTTONS`] that no longer act as their plain mouse
+    /// Control ids of the model's native buttons that no longer act as their plain mouse
     /// button — Hypershift (`0x0c`), a key or a macro stored over them.
     pub fn drifted_native_buttons(&self) -> Result<Vec<&'static str>, String> {
         let mut drifted = Vec::new();
-        for (control_id, button_id, value) in NATIVE_BUTTONS {
+        for &(control_id, button_id, value) in self.model.native_buttons {
             if self.native_button_drifted(button_id, value)? {
                 drifted.push(control_id);
             }
@@ -731,13 +696,7 @@ impl VendorDevice {
     /// 0 carries the status. The device answers `busy` while it finishes an
     /// internal write, so a busy reply is retried instead of reported.
     fn command(&self, class: u8, command: u8, args: &[u8]) -> Result<[u8; PAYLOAD_LEN], String> {
-        let mut payload = [0u8; PAYLOAD_LEN];
-        payload[1] = COMMAND_TX;
-        payload[5] = args.len() as u8;
-        payload[6] = class;
-        payload[7] = command;
-        payload[8..8 + args.len()].copy_from_slice(args);
-        payload[88] = checksum(&payload);
+        let payload = build_command(self.model.transaction_id, class, command, args);
         for _ in 0..COMMAND_RETRIES {
             self.set_payload(&payload)?;
             std::thread::sleep(COMMAND_SETTLE);
@@ -797,6 +756,20 @@ impl Drop for VendorDevice {
             CloseHandle(self.handle);
         }
     }
+}
+
+/// Payload of one command-class request: transaction byte, argument length,
+/// class, command, arguments, checksum. Every command in this module goes
+/// through here, so its golden tests pin the bytes on the wire.
+fn build_command(transaction_id: u8, class: u8, command: u8, args: &[u8]) -> [u8; PAYLOAD_LEN] {
+    let mut payload = [0u8; PAYLOAD_LEN];
+    payload[1] = transaction_id;
+    payload[5] = args.len() as u8;
+    payload[6] = class;
+    payload[7] = command;
+    payload[8..8 + args.len()].copy_from_slice(args);
+    payload[88] = checksum(&payload);
+    payload
 }
 
 fn build_record(slot: u8, button_id: u8, usage: u8, modifier: u8) -> [u8; PAYLOAD_LEN] {
@@ -903,6 +876,7 @@ fn find_leaf(parent: HKEY, class: String, needle: &str) -> Result<String, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device_catalog::NAGA_V2_HYPERSPEED;
 
     /// Slot payloads captured from Synapse's own `GET_REPORT` replies, with the
     /// checksum byte it stored at offset 88.
@@ -958,10 +932,10 @@ mod tests {
 
     #[test]
     fn thumb_buttons_map_onto_the_vendor_slots() {
-        assert_eq!(slot_for_button(0x40), Some(0x07));
-        assert_eq!(slot_for_button(0x44), Some(0x00));
-        assert_eq!(slot_for_button(0x4b), Some(0x06));
-        assert_eq!(slot_for_button(0x34), None);
+        assert_eq!(NAGA_V2_HYPERSPEED.slot_for(0x40), Some(0x07));
+        assert_eq!(NAGA_V2_HYPERSPEED.slot_for(0x44), Some(0x00));
+        assert_eq!(NAGA_V2_HYPERSPEED.slot_for(0x4b), Some(0x06));
+        assert_eq!(NAGA_V2_HYPERSPEED.slot_for(0x34), None);
     }
 
     /// The whole chain the app depends on: config control id to the slot and
@@ -976,7 +950,7 @@ mod tests {
         for (index, (button_id, slot, usage)) in EXPECTED.iter().copied().enumerate() {
             let control = format!("thumb_{:02}", index + 1);
             assert_eq!(button_id_for_control(&control), Some(button_id), "{control}");
-            assert_eq!(slot_for_button(button_id), Some(slot), "{control}");
+            assert_eq!(NAGA_V2_HYPERSPEED.slot_for(button_id), Some(slot), "{control}");
             assert_eq!(usage_for_key(&format!("F{}", 13 + index)), Some(usage), "{control}");
         }
         assert_eq!(button_id_for_control("mouse_left"), None);
@@ -1001,7 +975,7 @@ mod tests {
     #[test]
     #[ignore]
     fn writes_the_captured_mapping_into_the_live_device() {
-        let device = VendorDevice::open(0x1532, 0x00B4)
+        let device = VendorDevice::open_connected()
             .expect("connect the Razer Naga V2 HyperSpeed to run this test");
         let bindings: Vec<OnboardBinding> = (0..12)
             .map(|index| OnboardBinding {
@@ -1045,10 +1019,10 @@ mod tests {
         assert_eq!(battery_percent_from_raw(0xa9), 66);
         assert_eq!(battery_percent_from_raw(0), 0);
         assert_eq!(battery_percent_from_raw(255), 100);
-        assert_eq!(hz_for_poll_code(0x02), Some(500));
-        assert_eq!(poll_code_for_hz(1000), Some(0x01));
-        assert_eq!(poll_code_for_hz(125), Some(0x08));
-        assert_eq!(poll_code_for_hz(250), None);
+        assert_eq!(NAGA_V2_HYPERSPEED.hz_for_poll_code(0x02), Some(500));
+        assert_eq!(NAGA_V2_HYPERSPEED.poll_code_for_hz(1000), Some(0x01));
+        assert_eq!(NAGA_V2_HYPERSPEED.poll_code_for_hz(125), Some(0x08));
+        assert_eq!(NAGA_V2_HYPERSPEED.poll_code_for_hz(250), None);
     }
 
     #[test]
@@ -1063,16 +1037,16 @@ mod tests {
             control_id: control.to_string(),
             encoded_key: key.to_string(),
         };
-        assert_eq!(binding_target(&binding("thumb_01", "F13")), Ok((0x40, 0x00, 0x68)));
-        assert_eq!(binding_target(&binding("thumb_12", "F24")), Ok((0x4b, 0x00, 0x73)));
+        assert_eq!(binding_target(&NAGA_V2_HYPERSPEED, &binding("thumb_01", "F13")), Ok((0x40, 0x00, 0x68)));
+        assert_eq!(binding_target(&NAGA_V2_HYPERSPEED, &binding("thumb_12", "F24")), Ok((0x4b, 0x00, 0x73)));
         // The top buttons, with the mask the hardware read back for `Alt+F23`.
-        assert_eq!(binding_target(&binding("top_aux_01", "Alt+F23")), Ok((0x0b, 0x04, 0x72)));
+        assert_eq!(binding_target(&NAGA_V2_HYPERSPEED, &binding("top_aux_01", "Alt+F23")), Ok((0x0b, 0x04, 0x72)));
         assert_eq!(
-            binding_target(&binding("thumb_01", "Ctrl+Alt+Shift+F13")),
+            binding_target(&NAGA_V2_HYPERSPEED, &binding("thumb_01", "Ctrl+Alt+Shift+F13")),
             Ok((0x40, 0x07, 0x68))
         );
-        assert!(binding_target(&binding("mouse_left", "F13")).is_err());
-        assert!(binding_target(&binding("thumb_01", "F12")).is_err());
+        assert!(binding_target(&NAGA_V2_HYPERSPEED, &binding("mouse_left", "F13")).is_err());
+        assert!(binding_target(&NAGA_V2_HYPERSPEED, &binding("thumb_01", "F12")).is_err());
     }
 
     /// The same filter `src/lib/onboard-mapping.ts` applies: standard layer and
@@ -1095,5 +1069,59 @@ mod tests {
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].control_id, "thumb_01");
         assert_eq!(bindings[0].encoded_key, "F13");
+    }
+
+    /// Expected wire payload from its leading bytes and checksum, written out
+    /// by hand from the Razer report layout (openrazer `razer_report`: status,
+    /// transaction id, 3 reserved, size, class, id, args; byte 88 = XOR 2..=87)
+    /// — never computed by the code under test.
+    fn wire(head: &[u8], checksum: u8) -> [u8; PAYLOAD_LEN] {
+        let mut payload = [0u8; PAYLOAD_LEN];
+        payload[..head.len()].copy_from_slice(head);
+        payload[88] = checksum;
+        payload
+    }
+
+    /// Golden bytes of every command the Naga V2 HyperSpeed is sent, with the
+    /// arguments each `VendorDevice` method uses. A catalog refactor must not
+    /// change a single byte here.
+    #[test]
+    fn commands_match_their_golden_bytes() {
+        let tx = NAGA_V2_HYPERSPEED.transaction_id;
+        let cases: [(&str, [u8; PAYLOAD_LEN], [u8; PAYLOAD_LEN]); 12] = [
+            ("get mode", build_command(tx, CLASS_CONTROL, CMD_GET_MODE, &[0x00, 0x00]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x02, 0x00, 0x84, 0x00, 0x00], 0x86)),
+            ("set mode normal", build_command(tx, CLASS_CONTROL, CMD_SET_MODE, &[MODE_NORMAL, 0x00]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x02, 0x00, 0x04, 0x00, 0x00], 0x06)),
+            ("get thumb_01 layer 0",
+             build_command(tx, CLASS_BUTTON, CMD_GET_BUTTON, &[0x01, 0x40, 0x00, 0, 0, 0, 0, 0, 0, 0]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x0a, 0x02, 0x8c, 0x01, 0x40, 0x00], 0xc5)),
+            ("get right button layer 1",
+             build_command(tx, CLASS_BUTTON, CMD_GET_BUTTON, &[0x01, 0x02, 0x01, 0, 0, 0, 0, 0, 0, 0]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x0a, 0x02, 0x8c, 0x01, 0x02, 0x01], 0x86)),
+            ("set top_aux_01 = Alt+F23",
+             build_command(tx, CLASS_BUTTON, CMD_SET_BUTTON, &[0x01, 0x0b, 0x00, 0x02, 0x02, 0x04, 0x72, 0, 0, 0]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x0a, 0x02, 0x0c, 0x01, 0x0b, 0x00, 0x02, 0x02, 0x04, 0x72], 0x78)),
+            ("restore right button",
+             build_command(tx, CLASS_BUTTON, CMD_SET_BUTTON, &[0x01, 0x02, 0x00, 0x01, 0x01, 0x02, 0, 0, 0, 0]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x0a, 0x02, 0x0c, 0x01, 0x02, 0x00, 0x01, 0x01, 0x02], 0x05)),
+            ("hypershift on right button layer 1",
+             build_command(tx, CLASS_BUTTON, CMD_SET_BUTTON, &[0x01, 0x02, 0x01, 0x0c, 0x01, 0x01, 0, 0, 0, 0]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x0a, 0x02, 0x0c, 0x01, 0x02, 0x01, 0x0c, 0x01, 0x01], 0x0a)),
+            ("get dpi", build_command(tx, CLASS_DPI, CMD_GET_DPI, &[VARSTORE, 0, 0, 0, 0, 0, 0]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x07, 0x04, 0x85, 0x01], 0x87)),
+            ("set dpi 1600",
+             build_command(tx, CLASS_DPI, CMD_SET_DPI, &[VARSTORE, 0x06, 0x40, 0x06, 0x40, 0x00, 0x00]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x07, 0x04, 0x05, 0x01, 0x06, 0x40, 0x06, 0x40], 0x07)),
+            ("get poll rate", build_command(tx, CLASS_CONTROL, CMD_GET_POLL_RATE, &[0x00]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x01, 0x00, 0x85, 0x00], 0x84)),
+            ("set poll 1000 Hz", build_command(tx, CLASS_CONTROL, CMD_SET_POLL_RATE, &[0x01]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x01, 0x00, 0x05, 0x01], 0x05)),
+            ("get battery", build_command(tx, CLASS_POWER, CMD_GET_BATTERY, &[0x00, 0x00]),
+             wire(&[0x00, 0x1f, 0, 0, 0, 0x02, 0x07, 0x80, 0x00, 0x00], 0x85)),
+        ];
+        for (name, built, expected) in cases {
+            assert_eq!(built.to_vec(), expected.to_vec(), "{name}");
+        }
     }
 }

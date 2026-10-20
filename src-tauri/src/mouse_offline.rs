@@ -135,7 +135,7 @@ fn modifier_mask(ctrl: bool, shift: bool, alt: bool, win: bool) -> u8 {
 /// effort: a record the mouse refuses is logged and skipped.
 pub fn write_offline_profile(config: &AppConfig, profile_id: &str, config_dir: &Path) {
     let records = offline_records(config, profile_id);
-    let device = match VendorDevice::open(0x1532, 0x00B4) {
+    let device = match VendorDevice::open_connected() {
         Ok(device) => device,
         Err(message) => {
             log::warn!("[mouse-offline] mouse not reachable, offline profile not written: {message}");
@@ -165,7 +165,7 @@ pub fn restore_after_offline(config: &AppConfig, config_dir: &Path) -> bool {
     if !marker.exists() {
         return false;
     }
-    let result = VendorDevice::open(0x1532, 0x00B4).and_then(|device| {
+    let result = VendorDevice::open_connected().and_then(|device| {
         device.apply_bindings(&onboard_bindings(config))?;
         let natives: Vec<&str> = native_buttons().iter().map(|(id, _, _)| *id).collect();
         device.restore_native_buttons(&natives)
