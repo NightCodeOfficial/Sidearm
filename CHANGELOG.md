@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-20
+
+Razer Synapse is no longer needed: Sidearm owns the Naga V2 HyperSpeed's
+onboard memory itself.
+
+### Added
+- The button layout is written straight into the mouse's onboard memory over
+  the vendor HID protocol; a guard watches the device mode, every button record
+  and Razer processes, and restores the layout if Razer software overwrites it.
+- Hypershift works on any trigger button, including the right button.
+- New "Mouse" workspace: per-profile DPI and polling rate (applied on profile
+  switch), battery level, an optional battery badge on the tray icon and a
+  low-battery warning below 10 % (at most once a day).
+- Buttons keep working with Sidearm closed: on exit the chosen profile
+  ("Without Sidearm" setting, default = the profile in effect) is stored in the
+  mouse — keys, shortcuts, modifier-only holds, mouse buttons and the
+  Hypershift layer — and Sidearm's own signals are restored on the next start.
+- The toolbar shows the profile the runtime applies and warns when the editor
+  shows another one.
+
+### Changed
+- Settings screens use compact rows (title and hint on the left, control on the
+  right) in a column capped at 920 px.
+- Signal codes (F13…) of the built-in Naga are hidden from the UI.
+- Elevated autostart is hash-pinned (exe + sibling DLLs) and registered through
+  an elevated helper; a re-confirm notice appears when the exe changes.
+
+### Fixed
+- Mouse 4/5 bindings fire, and back/forward no longer stop working right after
+  Sidearm exits (the capture helper is stopped before exit).
+- Mouse actions never fire inside Sidearm's own window.
+- Errors raised through `setError` are always shown.
+- Concurrent vendor HID exchanges no longer read each other's replies.
+
 ## [0.8.3] — 2026-08-21
 
 ### Fixed
