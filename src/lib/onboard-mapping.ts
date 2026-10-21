@@ -67,11 +67,14 @@ export interface MouseBatteryEvent {
   low: boolean;
 }
 
-/** DPI range the mouse accepts (mirrors Rust `DPI_MIN`/`DPI_MAX`). */
-export const MOUSE_DPI_MIN = 100;
-export const MOUSE_DPI_MAX = 30000;
-/** Poll rates the mouse supports, in Hz. */
-export const MOUSE_POLL_RATES = [125, 500, 1000] as const;
+/** The natively driven model's limits (Rust `NativeModelInfo`, from the device catalog). */
+export interface NativeModelInfo {
+  name: string;
+  dpiMin: number;
+  dpiMax: number;
+  /** Supported poll rates in Hz, ascending. */
+  pollRates: number[];
+}
 
 /**
  * What the backend's takeover guard had to take back from Razer's engine: the

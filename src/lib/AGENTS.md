@@ -10,7 +10,7 @@ Framework-free TypeScript: config editing, conflict detection, action/label help
 - `config-editing.ts` — all config mutations (bindings, profiles, snippets, app-mappings), import validators, dedupe.
 - `conflict-detection.ts` — shortcut conflicts + `bindingMatchesQuery` (label/shortcut/action-content search).
 - `backend.ts` — typed wrappers over Tauri `invoke` (the only place `invoke` is called).
-- `helpers.ts`, `labels.ts`, `menu-helpers.ts`, `action-helpers.ts`, `command-palette-helpers.ts`, `verification-*`, `*-transfer.ts`, `synapse-import.ts`, `mouse-visual.ts`, `onboard-mapping.ts` (thumb + top-button bindings handed to `verify_onboard_mapping`, mirroring Rust `onboard_bindings`, `isBuiltinControl` for hiding the built-in device's signals, plus the takeover event type), `constants/`.
+- `helpers.ts`, `labels.ts`, `menu-helpers.ts`, `action-helpers.ts`, `command-palette-helpers.ts`, `verification-*`, `*-transfer.ts`, `synapse-import.ts`, `mouse-visual.ts`, `onboard-mapping.ts` (thumb + top-button bindings handed to `verify_onboard_mapping`, mirroring Rust `onboard_bindings`, `isBuiltinControl` for hiding the built-in device's signals, plus the takeover event type and the `NativeModelInfo` limits of `get_native_model`), `constants/`.
 
 ## Local Contracts
 

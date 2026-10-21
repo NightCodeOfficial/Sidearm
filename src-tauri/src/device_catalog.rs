@@ -49,6 +49,23 @@ impl NativeModel {
     pub fn hz_for_poll_code(&self, code: u8) -> Option<u16> {
         self.poll_rates.iter().find(|(_, c)| *c == code).map(|(rate, _)| *rate)
     }
+    /// What the Mouse workspace needs to know about the model, without
+    /// touching the device: name, DPI range, poll rates ascending.
+    pub fn info(&self) -> NativeModelInfo {
+        let mut poll_rates: Vec<u16> = self.poll_rates.iter().map(|(hz, _)| *hz).collect();
+        poll_rates.sort_unstable();
+        NativeModelInfo { name: self.name, dpi_min: self.dpi_min, dpi_max: self.dpi_max, poll_rates }
+    }
+}
+
+/// The model's limits as the frontend sees them (`get_native_model`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeModelInfo {
+    pub name: &'static str,
+    pub dpi_min: u16,
+    pub dpi_max: u16,
+    pub poll_rates: Vec<u16>,
 }
 
 /// Razer Naga V2 HyperSpeed, measured on hardware (2026-10-16/17).
@@ -123,6 +140,14 @@ mod tests {
         assert_eq!(m.poll_code_for_hz(1000), Some(0x01));
         assert_eq!(m.hz_for_poll_code(0x08), Some(125));
         assert_eq!(m.poll_code_for_hz(2000), None);
+    }
+
+    #[test]
+    fn info_lists_the_poll_rates_ascending() {
+        let info = NAGA_V2_HYPERSPEED.info();
+        assert_eq!(info.name, "Razer Naga V2 HyperSpeed");
+        assert_eq!((info.dpi_min, info.dpi_max), (100, 30_000));
+        assert_eq!(info.poll_rates, [125, 500, 1000]);
     }
 
     #[test]

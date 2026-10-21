@@ -18,6 +18,7 @@ import type {
 import type {
   MouseBatteryEvent,
   MouseSettings,
+  NativeModelInfo,
   OnboardBinding,
   OnboardReport,
   OnboardTakeoverEvent,
@@ -100,6 +101,11 @@ export async function restoreOnboardControl(): Promise<void> {
   return invoke<void>("restore_onboard_control");
 }
 
+/** Name, DPI range and poll rates of the natively driven mouse model. */
+export async function getNativeModel(): Promise<NativeModelInfo> {
+  return invoke<NativeModelInfo>("get_native_model");
+}
+
 /** Battery, DPI and poll rate as the mouse reports them now. */
 export async function getMouseSettings(): Promise<MouseSettings> {
   return invoke<MouseSettings>("get_mouse_settings");
@@ -110,7 +116,7 @@ export async function setMouseDpi(dpi: number): Promise<MouseSettings> {
   return invoke<MouseSettings>("set_mouse_dpi", { dpi });
 }
 
-/** Sets the poll rate (125/500/1000 Hz); resolves with the settings read back. */
+/** Sets the poll rate (one of the model's `pollRates`); resolves with the settings read back. */
 export async function setMousePollRate(hz: number): Promise<MouseSettings> {
   return invoke<MouseSettings>("set_mouse_poll_rate", { hz });
 }

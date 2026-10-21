@@ -141,7 +141,7 @@ pub fn checksum(payload: &[u8; PAYLOAD_LEN]) -> u8 {
 // shortcut: the config does not name its model yet, so config-driven code
 // (`onboard_bindings`, the offline plan) assumes the only catalog entry;
 // step 2 of plans/multi-device/plan.md passes the config's model instead.
-fn config_model() -> &'static NativeModel {
+pub fn config_model() -> &'static NativeModel {
     &crate::device_catalog::NAGA_V2_HYPERSPEED
 }
 

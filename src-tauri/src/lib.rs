@@ -2781,6 +2781,14 @@ async fn with_mouse_settings(
     .map_err(|e| CommandError::internal(format!("mouse settings task failed: {e}")))?
 }
 
+/// Name, DPI range and poll rates of the natively driven model. Static
+/// catalog data: answers even while the mouse sleeps or is unplugged.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn get_native_model() -> device_catalog::NativeModelInfo {
+    mouse_memory::config_model().info()
+}
+
 /// Battery, DPI and poll rate as the mouse reports them now.
 #[cfg(target_os = "windows")]
 #[tauri::command]
@@ -3620,6 +3628,7 @@ pub fn run() {
             apply_onboard_mapping,
             verify_onboard_mapping,
             restore_onboard_control,
+            get_native_model,
             get_mouse_settings,
             set_mouse_dpi,
             set_mouse_poll_rate

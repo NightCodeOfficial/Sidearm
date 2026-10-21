@@ -4,17 +4,13 @@ import type { AppConfig, Profile } from "../lib/config";
 import { upsertProfile } from "../lib/config-editing";
 import {
   getMouseSettings,
+  getNativeModel,
   listenMouseBattery,
   normalizeCommandError,
   setMouseDpi,
   setMousePollRate,
 } from "../lib/backend";
-import {
-  MOUSE_DPI_MAX,
-  MOUSE_DPI_MIN,
-  MOUSE_POLL_RATES,
-  type MouseSettings as MouseSettingsState,
-} from "../lib/onboard-mapping";
+import type { MouseSettings as MouseSettingsState, NativeModelInfo } from "../lib/onboard-mapping";
 import { PillTrack } from "./PillTrack";
 import { Notice, SelectField, SettingRow, Toggle } from "./shared";
 
@@ -43,6 +39,7 @@ export function MouseWorkspace({
 }: MouseWorkspaceProps) {
   const { t } = useTranslation();
   const [device, setDevice] = useState<MouseSettingsState | null>(null);
+  const [model, setModel] = useState<NativeModelInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dpiDraft, setDpiDraft] = useState("");
@@ -60,6 +57,9 @@ export function MouseWorkspace({
   }
 
   useEffect(() => {
+    getNativeModel().then(setModel, (unknownError: unknown) =>
+      setError(normalizeCommandError(unknownError).message),
+    );
     void run(getMouseSettings);
     let unlisten: (() => void) | undefined;
     void listenMouseBattery(({ percent }) => {
@@ -91,7 +91,10 @@ export function MouseWorkspace({
 
   const dpiValue = Number(dpiDraft);
   const dpiValid =
-    Number.isInteger(dpiValue) && dpiValue >= MOUSE_DPI_MIN && dpiValue <= MOUSE_DPI_MAX;
+    model !== null &&
+    Number.isInteger(dpiValue) &&
+    dpiValue >= model.dpiMin &&
+    dpiValue <= model.dpiMax;
 
   return (
     <div className="settings-shell__content">
@@ -140,7 +143,7 @@ export function MouseWorkspace({
             <>
               <SettingRow title={t("mouse.pollRate")} hint={t("mouse.pollRateCaption")}>
                 <PillTrack
-                  items={MOUSE_POLL_RATES.map((hz) => ({
+                  items={(model?.pollRates ?? []).map((hz) => ({
                     key: String(hz),
                     label: t("mouse.pollRateOption", { hz }),
                   }))}
@@ -154,13 +157,13 @@ export function MouseWorkspace({
               </SettingRow>
               <SettingRow
                 title={t("mouse.dpi")}
-                hint={t("mouse.dpiCaption", { min: MOUSE_DPI_MIN, max: MOUSE_DPI_MAX })}
+                hint={model ? t("mouse.dpiCaption", { min: model.dpiMin, max: model.dpiMax }) : undefined}
               >
                 <div className="input-suffix input-suffix--compact">
                   <input
                     type="number"
-                    min={MOUSE_DPI_MIN}
-                    max={MOUSE_DPI_MAX}
+                    min={model?.dpiMin}
+                    max={model?.dpiMax}
                     step={50}
                     value={dpiDraft}
                     aria-label={t("mouse.dpi")}
