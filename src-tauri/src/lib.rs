@@ -2781,12 +2781,18 @@ async fn with_mouse_settings(
     .map_err(|e| CommandError::internal(format!("mouse settings task failed: {e}")))?
 }
 
-/// Name, DPI range and poll rates of the natively driven model. Static
-/// catalog data: answers even while the mouse sleeps or is unplugged.
+/// Name, DPI range, poll rates and verification of the natively driven model:
+/// the one plugged in, else the config's. Catalog data plus a registry lookup
+/// and an open handle — no vendor command, so a sleeping mouse still answers.
 #[cfg(target_os = "windows")]
 #[tauri::command]
-fn get_native_model() -> device_catalog::NativeModelInfo {
-    mouse_memory::config_model().info()
+async fn get_native_model() -> Result<device_catalog::NativeModelInfo, CommandError> {
+    tauri::async_runtime::spawn_blocking(|| match mouse_memory::VendorDevice::open_connected() {
+        Ok(device) => device.model().info(true),
+        Err(_) => mouse_memory::config_model().info(false),
+    })
+    .await
+    .map_err(|e| CommandError::internal(format!("native model task failed: {e}")))
 }
 
 /// Battery, DPI and poll rate as the mouse reports them now.

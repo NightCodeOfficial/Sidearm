@@ -105,6 +105,8 @@ enum Verdict {
     Clean(usize),
     /// Something was taken back (already reported).
     TookBack,
+    /// An unverified model: read for its battery only, never guarded.
+    ReadOnly,
 }
 
 /// Starts the guard on its own thread. It lives as long as the app does and idles
@@ -275,6 +277,14 @@ fn check_once(
         // No mouse, or its collection is not openable right now.
         return Verdict::Unreadable;
     };
+    if !device.model().verified {
+        if let Some(config) = read_config(config_dir)
+            && let Ok(percent) = device.battery_percent()
+        {
+            report_battery(app, &config, config_dir, percent);
+        }
+        return Verdict::ReadOnly;
+    }
 
     // Read the mode first and only act on a mode we actually read. A sleeping
     // mouse (or a busy dongle) answers every vendor command with a refusal

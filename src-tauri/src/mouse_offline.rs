@@ -142,6 +142,10 @@ pub fn write_offline_profile(config: &AppConfig, profile_id: &str, config_dir: &
             return;
         }
     };
+    if !device.model().verified {
+        log::info!("[mouse-offline] {} is not verified: offline profile not written", device.model().name);
+        return;
+    }
     let failed = records
         .iter()
         .filter(|r| {
@@ -166,6 +170,10 @@ pub fn restore_after_offline(config: &AppConfig, config_dir: &Path) -> bool {
         return false;
     }
     let result = VendorDevice::open_connected().and_then(|device| {
+        if !device.model().verified {
+            // Not the mouse the profile was written into; keep the marker for it.
+            return Err(format!("{} is not verified", device.model().name));
+        }
         device.apply_bindings(&onboard_bindings(config))?;
         let natives: Vec<&str> = native_buttons().iter().map(|(id, _, _)| *id).collect();
         device.restore_native_buttons(&natives)

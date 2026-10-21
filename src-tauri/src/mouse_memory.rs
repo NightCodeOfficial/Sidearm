@@ -410,9 +410,26 @@ impl VendorDevice {
         Ok(Self { handle, _exclusive: exclusive, model })
     }
 
+    /// The model this device was opened as.
+    pub fn model(&self) -> &'static NativeModel {
+        self.model
+    }
+
+    /// Every write that changes what a button does goes through here first: a
+    /// model not proven on hardware may hold wrong button ids, and a wrong
+    /// record can leave a button dead outside Sidearm.
+    fn require_verified(&self) -> Result<(), String> {
+        if self.model.verified {
+            Ok(())
+        } else {
+            Err(format!("{} is not verified yet: button records are not written", self.model.name))
+        }
+    }
+
     /// Writes one button record into its slot and verifies it read back.
     /// `Err` means the mouse did not echo what we wrote.
     pub fn write_button(&self, button_id: u8, usage: u8, modifier: u8) -> Result<(), String> {
+        self.require_verified()?;
         let Some(slot) = self.model.slot_for(button_id) else {
             return self.write_key_command(button_id, modifier, usage);
         };
@@ -491,6 +508,7 @@ impl VendorDevice {
     /// ([`MODE_CONFIRM_ATTEMPTS`]) because a transition is not a failure — only a
     /// mode that is still wrong after every attempt is an error.
     pub fn ensure_normal_mode(&self) -> Result<u8, String> {
+        self.require_verified()?;
         let before = self.mode()?;
         if before == MODE_NORMAL {
             return Ok(before);
@@ -593,6 +611,7 @@ impl VendorDevice {
     /// to read back (measured: a layer-1 key and a layer-0 mouse button both
     /// read back exactly as written).
     pub fn write_record(&self, button_id: u8, layer: u8, action: OnboardAction) -> Result<(), String> {
+        self.require_verified()?;
         let mut args = [0u8; 10];
         args[0] = 0x01;
         args[1] = button_id;
@@ -639,6 +658,7 @@ impl VendorDevice {
     /// Writes the standard-layer record of `button_id` back to the plain mouse
     /// button `value` and requires the device to read it back.
     pub fn restore_native_button(&self, button_id: u8, value: u8) -> Result<(), String> {
+        self.require_verified()?;
         let args = [0x01, button_id, 0x00, CATEGORY_MOUSE, 0x01, value, 0x00, 0x00, 0x00, 0x00];
         self.command(CLASS_BUTTON, CMD_SET_BUTTON, &args)?;
         if self.read_button(button_id)?.is_mouse_button(value) {
@@ -1123,5 +1143,29 @@ mod tests {
         for (name, built, expected) in cases {
             assert_eq!(built.to_vec(), expected.to_vec(), "{name}");
         }
+    }
+
+    /// An unverified model refuses every write that changes a button before
+    /// any HID traffic: the handle here is invalid, so reaching the device
+    /// would fail with an OS error instead of the refusal.
+    #[test]
+    fn unverified_model_refuses_button_writes() {
+        static UNVERIFIED: NativeModel = NativeModel {
+            name: "Test mouse",
+            verified: false,
+            ..crate::device_catalog::NAGA_V2_HYPERSPEED
+        };
+        let device = VendorDevice {
+            handle: INVALID_HANDLE_VALUE,
+            _exclusive: DEVICE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            model: &UNVERIFIED,
+        };
+        let refused = |result: Result<(), String>| {
+            assert_eq!(result, Err("Test mouse is not verified yet: button records are not written".into()));
+        };
+        refused(device.write_button(0x40, 0x68, 0x00));
+        refused(device.write_record(0x02, 1, OnboardAction::Hypershift));
+        refused(device.restore_native_button(0x02, 2));
+        refused(device.ensure_normal_mode().map(|_| ()));
     }
 }

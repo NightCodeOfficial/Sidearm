@@ -98,6 +98,11 @@ export function MouseWorkspace({
 
   return (
     <div className="settings-shell__content">
+      {model && !model.verified ? (
+        <Notice variant="warning">
+          <p>{t("mouse.unverifiedModel", { name: model.name })}</p>
+        </Notice>
+      ) : null}
       <section className="settings-section">
         <SettingRow title={t("mouse.profilePicker")} hint={t("mouse.profilePickerHelp")}>
           <PillTrack

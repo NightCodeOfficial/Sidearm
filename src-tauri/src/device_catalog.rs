@@ -27,6 +27,10 @@ pub struct NativeModel {
     pub dpi_max: u16,
     /// Poll rate (Hz) ↔ wire code of the control-class poll command.
     pub poll_rates: &'static [(u16, u8)],
+    /// Proven on hardware. An unverified model is only read and gets DPI /
+    /// poll-rate writes (each confirmed by read-back); button records, the
+    /// offline profile and guard restores are refused for it.
+    pub verified: bool,
 }
 
 impl NativeModel {
@@ -49,12 +53,20 @@ impl NativeModel {
     pub fn hz_for_poll_code(&self, code: u8) -> Option<u16> {
         self.poll_rates.iter().find(|(_, c)| *c == code).map(|(rate, _)| *rate)
     }
-    /// What the Mouse workspace needs to know about the model, without
-    /// touching the device: name, DPI range, poll rates ascending.
-    pub fn info(&self) -> NativeModelInfo {
+    /// What the Mouse workspace needs to know about the model: name, DPI
+    /// range, poll rates ascending, whether it is verified, and whether it is
+    /// the one plugged in now.
+    pub fn info(&self, connected: bool) -> NativeModelInfo {
         let mut poll_rates: Vec<u16> = self.poll_rates.iter().map(|(hz, _)| *hz).collect();
         poll_rates.sort_unstable();
-        NativeModelInfo { name: self.name, dpi_min: self.dpi_min, dpi_max: self.dpi_max, poll_rates }
+        NativeModelInfo {
+            name: self.name,
+            dpi_min: self.dpi_min,
+            dpi_max: self.dpi_max,
+            poll_rates,
+            verified: self.verified,
+            connected,
+        }
     }
 }
 
@@ -66,10 +78,12 @@ pub struct NativeModelInfo {
     pub dpi_min: u16,
     pub dpi_max: u16,
     pub poll_rates: Vec<u16>,
+    pub verified: bool,
+    pub connected: bool,
 }
 
 /// Razer Naga V2 HyperSpeed, measured on hardware (2026-10-16/17).
-pub static NAGA_V2_HYPERSPEED: NativeModel = NativeModel {
+pub const NAGA_V2_HYPERSPEED: NativeModel = NativeModel {
     name: "Razer Naga V2 HyperSpeed",
     vid: 0x1532,
     // The receiver; the mouse has no wired data link (Bluetooth is 0x00B5).
@@ -109,6 +123,7 @@ pub static NAGA_V2_HYPERSPEED: NativeModel = NativeModel {
     // Measured: `0x02` read back as the 500 Hz the mouse ran at, a `0x01`
     // write read back as 1000 Hz.
     poll_rates: &[(1000, 0x01), (500, 0x02), (125, 0x08)],
+    verified: true,
 };
 
 /// Every natively supported model, probed in this order.
@@ -144,10 +159,11 @@ mod tests {
 
     #[test]
     fn info_lists_the_poll_rates_ascending() {
-        let info = NAGA_V2_HYPERSPEED.info();
+        let info = NAGA_V2_HYPERSPEED.info(true);
         assert_eq!(info.name, "Razer Naga V2 HyperSpeed");
         assert_eq!((info.dpi_min, info.dpi_max), (100, 30_000));
         assert_eq!(info.poll_rates, [125, 500, 1000]);
+        assert!(info.verified && info.connected);
     }
 
     #[test]

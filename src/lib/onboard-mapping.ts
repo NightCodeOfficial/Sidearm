@@ -74,6 +74,10 @@ export interface NativeModelInfo {
   dpiMax: number;
   /** Supported poll rates in Hz, ascending. */
   pollRates: number[];
+  /** Proven on hardware; an unverified model's buttons are never written. */
+  verified: boolean;
+  /** The model is plugged in now (else it is the config's model). */
+  connected: boolean;
 }
 
 /**
