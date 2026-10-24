@@ -36,6 +36,7 @@ import { TitleBar } from "./components/TitleBar";
 import { Toolbar } from "./components/Toolbar";
 import {
   acceptPortableMigration,
+  getAdminAutostartStatus,
   getAppPaths,
   listBackups,
   normalizeCommandError,
@@ -53,6 +54,7 @@ import {
   relaunchAsAdmin,
   restoreConfigFromBackup,
   restoreOnboardControl,
+  setAdminAutostart,
 } from "./lib/backend";
 import { displayNameForControl, labelForLayer, relativeTime } from "./lib/labels";
 import { exportProfileToFile } from "./lib/profile-transfer";
@@ -290,6 +292,30 @@ function App() {
       unlisten = fn;
     });
     return () => unlisten?.();
+  }, [showToast, t]);
+
+  // After an update the admin logon task's hash pin no longer matches, so it
+  // silently refuses to start Sidearm (exit 2). The Settings notice is only seen
+  // once the user starts Sidearm by hand — say it right away on launch.
+  // Path mismatch is skipped on purpose: a dev build must not re-pin itself.
+  useEffect(() => {
+    let cancelled = false; // StrictMode runs this twice in dev — one toast only
+    void getAdminAutostartStatus()
+      .then((status) => {
+        if (cancelled || !status.enabled || status.pathMismatch || !status.needsReconfirm) return;
+        showToast(t("elevation.autostartStale"), "warning", {
+          label: t("settings.autostartReconfirmButton"),
+          onClick: () => {
+            void setAdminAutostart(true)
+              .then(() => showToast(t("elevation.autostartReconfirmed"), "success"))
+              .catch((e: unknown) => showToast(normalizeCommandError(e).message, "warning"));
+          },
+        });
+      })
+      .catch(() => {}); // a failed query is not actionable here; Settings shows the status
+    return () => {
+      cancelled = true;
+    };
   }, [showToast, t]);
 
   // Tray switched the active profile — mirror the selection into the UI.

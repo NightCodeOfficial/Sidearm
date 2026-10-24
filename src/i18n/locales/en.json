@@ -1061,7 +1061,9 @@
   },
   "elevation": {
     "foregroundBlocked": "“{{exe}}” is running as administrator — Windows blocks Sidearm's input there.",
-    "relaunchAction": "Restart as administrator"
+    "relaunchAction": "Restart as administrator",
+    "autostartStale": "Autostart as administrator is out of date after the update — at logon Windows will not start Sidearm. Confirm it once.",
+    "autostartReconfirmed": "Autostart as administrator confirmed."
   },
   "device": {
     "addDevice": "＋ Device",
