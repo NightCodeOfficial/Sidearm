@@ -127,6 +127,9 @@ const MODE_CONFIRM_WAIT: std::time::Duration = std::time::Duration::from_millis(
 /// Category byte of a button record that emits a key.
 const CATEGORY_KEY: u8 = 0x02;
 
+/// `find_interface_path` error for a device with no interface in the registry
+/// (not plugged in).
+const NO_INTERFACE: &str = "our device has no HID interface in the registry";
 /// Registry home of device interface symbolic link names.
 const DEVICE_CLASSES: &str = r"SYSTEM\CurrentControlSet\Control\DeviceClasses";
 /// Interface class that owns the HID collections (not the HID *class* guid).
@@ -371,11 +374,14 @@ impl VendorDevice {
     /// Opens the vendor collection of the first catalog model found in the
     /// registry. `Err` carries the last model's failure.
     pub fn open_connected() -> Result<Self, String> {
-        let mut last_error = "no natively supported mouse in the catalog".to_string();
+        // A model that is simply not plugged in is not worth reporting; an
+        // interface that exists but does not open is.
+        let mut last_error = "no supported Razer mouse is connected".to_string();
         for model in crate::device_catalog::CATALOG {
             for pid in model.pids {
                 match Self::open(model, *pid) {
                     Ok(device) => return Ok(device),
+                    Err(error) if error == NO_INTERFACE => {}
                     Err(error) => last_error = format!("{}: {error}", model.name),
                 }
             }
@@ -388,7 +394,7 @@ impl VendorDevice {
     fn open(model: &'static NativeModel, pid: u16) -> Result<Self, String> {
         // A panic mid-exchange leaves no state behind the lock worth refusing for.
         let exclusive = DEVICE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let path = find_interface_path(model.vid, pid)?;
+        let path = find_interface_path(model.vid, pid, model.interface)?;
         let mut wide: Vec<u16> = path.encode_utf16().collect();
         wide.push(0);
         // No requested rights: the vendor collection is held by Razer's driver
@@ -813,8 +819,8 @@ fn record_matches(written: &[u8; PAYLOAD_LEN], read: &[u8; PAYLOAD_LEN]) -> bool
     written[5..15] == read[5..15] && written[88] == read[88]
 }
 
-fn find_interface_path(vid: u16, pid: u16) -> Result<String, String> {
-    let needle = format!("VID_{vid:04X}&PID_{pid:04X}");
+fn find_interface_path(vid: u16, pid: u16, interface: u8) -> Result<String, String> {
+    let needle = interface_needle(vid, pid, interface);
     let classes_path: Vec<u16> = DEVICE_CLASSES
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -835,6 +841,22 @@ fn find_interface_path(vid: u16, pid: u16) -> Result<String, String> {
     let result = find_class_key(classes, &needle);
     unsafe { RegCloseKey(classes) };
     result
+}
+
+/// What a vendor collection's registry leaf contains: the device and the USB
+/// interface carrying the vendor reports (`&MI_00` on the V2 HyperSpeed; its
+/// `MI_01`/`MI_02` collections answer no vendor command).
+fn interface_needle(vid: u16, pid: u16, interface: u8) -> String {
+    format!("VID_{vid:04X}&PID_{pid:04X}&MI_{interface:02X}")
+}
+
+/// Device path of a registry leaf (`##?#HID#VID_…&MI_00#…#{guid}` →
+/// `\\?\HID#VID_…#{guid}`) when it belongs to the wanted interface. The first
+/// matching leaf wins; on the V2 HyperSpeed that is the bare `MI_00`, listed
+/// before its `MI_00&Col03&…` sub-collections.
+fn interface_path(leaf: &str, needle: &str) -> Option<String> {
+    let rest = leaf.strip_prefix("##?#")?;
+    rest.to_uppercase().contains(needle).then(|| format!(r"\\?\{rest}"))
 }
 
 fn find_class_key(classes: HKEY, needle: &str) -> Result<String, String> {
@@ -881,11 +903,11 @@ fn find_leaf(parent: HKEY, class: String, needle: &str) -> Result<String, String
                                   std::ptr::null_mut(), std::ptr::null_mut()) }
             != 0
         {
-            break Err("our device has no HID interface in the registry".to_string());
+            break Err(NO_INTERFACE.to_string());
         }
         let leaf = String::from_utf16_lossy(&name[..len as usize]);
-        if leaf.starts_with("##?#") && leaf[4..].to_uppercase().contains(needle) {
-            break Ok(format!(r"\\?\{}", &leaf[4..]));
+        if let Some(path) = interface_path(&leaf, needle) {
+            break Ok(path);
         }
         index += 1;
     };
@@ -1167,5 +1189,29 @@ mod tests {
         refused(device.write_record(0x02, 1, OnboardAction::Hypershift));
         refused(device.restore_native_button(0x02, 2));
         refused(device.ensure_normal_mode().map(|_| ()));
+    }
+
+    /// Real leaf names of the V2 HyperSpeed in registry order (2026-10-21):
+    /// the interface filter keeps the bare `MI_00` collection v0.9.0 opened.
+    #[test]
+    fn interface_filter_picks_the_vendor_collection() {
+        let leaves = [
+            "##?#HID#VID_1532&PID_00B4&MI_00#9&175a7019&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+            "##?#HID#VID_1532&PID_00B4&MI_00&Col03&Col01#a&1d1ebcfa&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+            "##?#HID#VID_1532&PID_00B4&MI_01&Col01#9&42a53db&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+            "##?#HID#VID_1532&PID_00B4&MI_02#9&2c9501a4&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}",
+        ];
+        let first = |interface: u8| {
+            let needle = interface_needle(0x1532, 0x00B4, interface);
+            leaves.iter().find_map(|leaf| interface_path(leaf, &needle))
+        };
+        assert_eq!(
+            first(0).as_deref(),
+            Some(r"\\?\HID#VID_1532&PID_00B4&MI_00#9&175a7019&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}")
+        );
+        assert!(first(2).unwrap().contains("&MI_02#"));
+        assert_eq!(first(3), None);
+        assert_eq!(interface_path("HID#VID_1532&PID_00B4&MI_00#x", &interface_needle(0x1532, 0x00B4, 0)), None);
+        assert_eq!(interface_path("##?#HID#VID_1532&PID_00B5&MI_00#x", &interface_needle(0x1532, 0x00B4, 0)), None);
     }
 }

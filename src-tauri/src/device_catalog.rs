@@ -13,6 +13,9 @@ pub struct NativeModel {
     /// Every PID the vendor collection can appear under (cable, dongle). The
     /// Bluetooth PID is absent on purpose: that link carries no vendor collection.
     pub pids: &'static [u16],
+    /// USB interface whose HID collection takes the vendor feature reports
+    /// (openrazer's report index: `3` on the Naga X / Basilisk V3, else `0`).
+    pub interface: u8,
     /// Transaction byte of command-class requests.
     pub transaction_id: u8,
     /// Controls whose onboard record emits a key, as `(control id, button id)`.
@@ -88,6 +91,7 @@ pub const NAGA_V2_HYPERSPEED: NativeModel = NativeModel {
     vid: 0x1532,
     // The receiver; the mouse has no wired data link (Bluetooth is 0x00B5).
     pids: &[0x00B4],
+    interface: 0,
     // Same value the captured Synapse traffic uses for control commands.
     transaction_id: 0x1f,
     // Thumbs `0x40..=0x4b` emit bare `F13`..`F24`; the two top buttons hold a
@@ -126,8 +130,104 @@ pub const NAGA_V2_HYPERSPEED: NativeModel = NativeModel {
     verified: true,
 };
 
+// The models below are NOT verified on hardware (`verified: false`): Sidearm
+// only reads them and writes DPI / poll rate. Sources: openrazer
+// `razermouse_driver.{h,c}` (PIDs, report interface, transaction byte) and
+// daemon `mouse.py` (DPI maximum); key-button ids from Synapse's button table
+// as published in BrandonDoster/fang `docs/devices.json` — used only once a
+// model is verified. Bluetooth PIDs are left out (no vendor collection).
+// Details and line references: plans/multi-device/plan.md §2 and §7.
+
+/// The twelve side buttons `0x40..=0x4b`, shared by every 12-button Naga.
+const THUMBS: [(&str, u8); 12] = [
+    ("thumb_01", 0x40), ("thumb_02", 0x41), ("thumb_03", 0x42), ("thumb_04", 0x43),
+    ("thumb_05", 0x44), ("thumb_06", 0x45), ("thumb_07", 0x46), ("thumb_08", 0x47),
+    ("thumb_09", 0x48), ("thumb_10", 0x49), ("thumb_11", 0x4a), ("thumb_12", 0x4b),
+];
+
+/// Razer Naga V2 Pro (cable `00A7`, HyperSpeed dongle `00A8`). Its 6-button
+/// plate (`0x50..=0x55`) has no control ids yet.
+pub const NAGA_V2_PRO: NativeModel = NativeModel {
+    name: "Razer Naga V2 Pro",
+    vid: 0x1532,
+    pids: &[0x00A7, 0x00A8],
+    interface: 0,
+    transaction_id: 0x1f,
+    // Synapse lists no 0x0b on this model, only 0x0c.
+    key_buttons: &[
+        THUMBS[0], THUMBS[1], THUMBS[2], THUMBS[3], THUMBS[4], THUMBS[5],
+        THUMBS[6], THUMBS[7], THUMBS[8], THUMBS[9], THUMBS[10], THUMBS[11],
+        ("top_aux_02", 0x0c),
+    ],
+    slots: &[],
+    native_buttons: &[
+        ("mouse_left", 0x01, 1),
+        ("mouse_right", 0x02, 2),
+        ("wheel_click", 0x03, 3),
+        ("mouse_4", 0x04, 4),
+        ("mouse_5", 0x05, 5),
+        ("wheel_up", 0x09, 0x09),
+        ("wheel_down", 0x0a, 0x0a),
+    ],
+    dpi_min: 100,
+    dpi_max: 30_000,
+    poll_rates: &[(1000, 0x01), (500, 0x02), (125, 0x08)],
+    verified: false,
+};
+
+/// Razer Naga Pro (cable `008F`, dongle `0090`). Swappable side plates; which
+/// plate answers on which ids is unknown.
+pub const NAGA_PRO: NativeModel = NativeModel {
+    name: "Razer Naga Pro",
+    vid: 0x1532,
+    pids: &[0x008F, 0x0090],
+    interface: 0,
+    transaction_id: 0x1f,
+    key_buttons: &[
+        THUMBS[0], THUMBS[1], THUMBS[2], THUMBS[3], THUMBS[4], THUMBS[5],
+        THUMBS[6], THUMBS[7], THUMBS[8], THUMBS[9], THUMBS[10], THUMBS[11],
+        ("top_aux_01", 0x0b), ("top_aux_02", 0x0c),
+    ],
+    slots: &[],
+    native_buttons: &[
+        ("mouse_left", 0x01, 1),
+        ("mouse_right", 0x02, 2),
+        ("wheel_click", 0x03, 3),
+        ("mouse_4", 0x04, 4),
+        ("mouse_5", 0x05, 5),
+        ("wheel_up", 0x09, 0x09),
+        ("wheel_down", 0x0a, 0x0a),
+    ],
+    dpi_min: 100,
+    dpi_max: 20_000,
+    poll_rates: &[(1000, 0x01), (500, 0x02), (125, 0x08)],
+    verified: false,
+};
+
+/// Razer Naga X (wired only, `0096`): no mouse 4/5, no tilt, no top buttons.
+pub const NAGA_X: NativeModel = NativeModel {
+    name: "Razer Naga X",
+    vid: 0x1532,
+    pids: &[0x0096],
+    interface: 3,
+    transaction_id: 0x1f,
+    key_buttons: &THUMBS,
+    slots: &[],
+    native_buttons: &[
+        ("mouse_left", 0x01, 1),
+        ("mouse_right", 0x02, 2),
+        ("wheel_click", 0x03, 3),
+        ("wheel_up", 0x09, 0x09),
+        ("wheel_down", 0x0a, 0x0a),
+    ],
+    dpi_min: 100,
+    dpi_max: 18_000,
+    poll_rates: &[(1000, 0x01), (500, 0x02), (125, 0x08)],
+    verified: false,
+};
+
 /// Every natively supported model, probed in this order.
-pub static CATALOG: &[&NativeModel] = &[&NAGA_V2_HYPERSPEED];
+pub static CATALOG: &[&NativeModel] = &[&NAGA_V2_HYPERSPEED, &NAGA_V2_PRO, &NAGA_PRO, &NAGA_X];
 
 #[cfg(test)]
 mod tests {
@@ -138,7 +238,7 @@ mod tests {
     #[test]
     fn naga_v2_hyperspeed_keeps_the_v090_tables() {
         let m = &NAGA_V2_HYPERSPEED;
-        assert_eq!((m.vid, m.pids, m.transaction_id), (0x1532, &[0x00B4u16][..], 0x1f));
+        assert_eq!((m.vid, m.pids, m.interface, m.transaction_id), (0x1532, &[0x00B4u16][..], 0, 0x1f));
         // Thumbs follow the order of the built-in Naga controls, from 0x40.
         for (index, control) in crate::config::NAGA_CONTROL_IDS.iter().take(12).enumerate() {
             assert_eq!(m.button_id_for(control), Some(0x40 + index as u8), "{control}");
@@ -164,6 +264,16 @@ mod tests {
         assert_eq!((info.dpi_min, info.dpi_max), (100, 30_000));
         assert_eq!(info.poll_rates, [125, 500, 1000]);
         assert!(info.verified && info.connected);
+    }
+
+    /// Only hardware proves a model: flipping `verified` must be a deliberate,
+    /// reviewed change of this list.
+    #[test]
+    fn only_the_naga_v2_hyperspeed_is_verified() {
+        let verified: Vec<&str> = CATALOG.iter().filter(|m| m.verified).map(|m| m.name).collect();
+        assert_eq!(verified, ["Razer Naga V2 HyperSpeed"]);
+        let names: Vec<&str> = CATALOG.iter().map(|m| m.name).collect();
+        assert_eq!(names, ["Razer Naga V2 HyperSpeed", "Razer Naga V2 Pro", "Razer Naga Pro", "Razer Naga X"]);
     }
 
     #[test]
