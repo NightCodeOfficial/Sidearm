@@ -1797,6 +1797,14 @@ fn wheel_capture_action(
         .map(|reg| reg.encoded_key.clone())
 }
 
+/// True while this session is displayed through Remote Desktop. Re-read per
+/// button event (a cheap user32 read, never on mouse moves) because a console
+/// session can be taken over by RDP — and handed back — while the helper runs.
+fn is_remote_session() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
+    unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
+}
+
 /// Hand a right-button injection to the injector thread. Never blocks and never
 /// calls Win32, so it is safe inside the hook callback.
 fn queue_hyper_injection(down: bool) {
@@ -1921,6 +1929,15 @@ unsafe extern "system" fn helper_ll_mouse_proc(code: i32, w_param: usize, l_para
             // Our own synthetic right click / Ctrl+wheel / X button — pass it through.
             return HyperMouseAction::Pass;
         }
+        // Under RDP the buttons come from the client's mouse, not this machine's:
+        // swallowing the trigger there kills every remote right click, so the
+        // software Hypershift layer stays off for the life of a remote session.
+        let trigger = if is_remote_session() {
+            HELPER_HYPER_ACTIVE.store(false, Ordering::Relaxed);
+            HYPER_TRIGGER_OFF
+        } else {
+            trigger
+        };
         let trigger_held = HELPER_HYPER_ACTIVE.load(Ordering::Relaxed);
         if let Some((button, is_down)) = mouse_button_code(msg, ms.mouseData)
             && (button == HYPER_TRIGGER_X1 || button == HYPER_TRIGGER_X2)
