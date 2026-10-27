@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-10-27
+
+First step beyond one mouse: a device catalog, with three more Razer Nagas
+recognised in a safe read-only mode.
+
+### Added
+- Razer Naga V2 Pro, Naga Pro and Naga X are recognised as native mice. They
+  are not verified on hardware yet, so Sidearm only reads them and writes DPI
+  and polling rate (each confirmed by read-back); their buttons work through
+  signals as a user device.
+- "Help verify" button in the Mouse tab for such a model: reads the mouse
+  without changing it, copies a device report and opens a GitHub issue, so a
+  model can be verified from user reports.
+- The app version is shown in the sidebar and in Settings.
+- A toast on launch when the "run as administrator" autostart pin is stale.
+
+### Changed
+- DPI range and polling rates come from the device catalog instead of fixed
+  frontend values.
+
+### Fixed
+- Right clicks pass through under Remote Desktop.
+
 ## [0.9.0] — 2026-10-20
 
 Razer Synapse is no longer needed: Sidearm owns the Naga V2 HyperSpeed's
