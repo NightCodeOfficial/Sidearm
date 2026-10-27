@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-10-27
+
 ### Fixed
 - No more "Couldn't update the mouse's own button mapping" after a save while
   the mouse slept: a save writes the button signals into the mouse only when
