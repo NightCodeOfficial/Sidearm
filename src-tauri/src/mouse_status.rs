@@ -1,0 +1,99 @@
+//! What the user must know about the mouse path that is not a takeover: the
+//! capture helper gone for good, side buttons that cannot be read, a mouse the
+//! guard cannot reach, an offline profile that was not stored, a signal switch.
+//!
+//! States (`set_state`) hold until cleared and show in the Mouse tab; notices
+//! (`notice`) are shown once as a toast. Both are emitted as
+//! [`EVENT_MOUSE_STATUS`] and kept here for a window that opens later
+//! (`snapshot`) — a notice raised at startup must not be lost before the UI
+//! listens.
+
+use std::sync::Mutex;
+
+use tauri::{AppHandle, Emitter};
+
+/// Emitted on every change: `{ kind, active }`.
+pub const EVENT_MOUSE_STATUS: &str = "mouse_status";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StatusKind {
+    /// State: the capture helper died and could not be restarted.
+    HelperLost,
+    /// State: the side buttons' signal collection does not open.
+    ButtonsUnreadable,
+    /// State: the guard has not reached the mouse for a while.
+    MouseUnreachable,
+    /// Notice: the mouse slept at the last exit, its offline profile was not stored.
+    OfflineNotStored,
+    /// Notice: the side buttons were switched to the configured signal kind.
+    SignalsSwitched,
+}
+
+/// Payload of [`EVENT_MOUSE_STATUS`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct StatusEvent {
+    pub kind: StatusKind,
+    pub active: bool,
+}
+
+/// Active states and notices the UI has not taken yet.
+static STATUS: Mutex<(Vec<StatusKind>, Vec<StatusKind>)> = Mutex::new((Vec::new(), Vec::new()));
+
+/// Sets or clears a state; emits only a change.
+pub fn set_state(app: Option<&AppHandle>, kind: StatusKind, active: bool) {
+    let changed = {
+        let mut status = STATUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let held = status.0.contains(&kind);
+        if active && !held {
+            status.0.push(kind);
+        } else if !active && held {
+            status.0.retain(|k| *k != kind);
+        }
+        held != active
+    };
+    if changed && let Some(app) = app {
+        let _ = app.emit(EVENT_MOUSE_STATUS, StatusEvent { kind, active });
+    }
+}
+
+/// Raises a one-time notice: kept until a [`snapshot`] takes it; the event only
+/// tells an open window to take it now.
+pub fn notice(app: Option<&AppHandle>, kind: StatusKind) {
+    STATUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).1.push(kind);
+    if let Some(app) = app {
+        let _ = app.emit(EVENT_MOUSE_STATUS, StatusEvent { kind, active: true });
+    }
+}
+
+/// The active states plus the pending notices, which it takes.
+pub fn snapshot() -> Vec<StatusEvent> {
+    let mut status = STATUS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let notices = std::mem::take(&mut status.1);
+    status
+        .0
+        .iter()
+        .chain(notices.iter())
+        .map(|kind| StatusEvent { kind: *kind, active: true })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// States persist until cleared; a notice is taken by the first snapshot.
+    #[test]
+    fn states_hold_and_notices_are_taken_once() {
+        set_state(None, StatusKind::ButtonsUnreadable, true);
+        set_state(None, StatusKind::ButtonsUnreadable, true);
+        notice(None, StatusKind::OfflineNotStored);
+        let first = snapshot();
+        assert!(first.contains(&StatusEvent { kind: StatusKind::ButtonsUnreadable, active: true }));
+        assert!(first.contains(&StatusEvent { kind: StatusKind::OfflineNotStored, active: true }));
+        assert_eq!(first.len(), 2, "a repeated state is held once");
+        assert_eq!(snapshot(), vec![StatusEvent { kind: StatusKind::ButtonsUnreadable, active: true }]);
+        set_state(None, StatusKind::ButtonsUnreadable, false);
+        assert!(snapshot().is_empty());
+    }
+}

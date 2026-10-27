@@ -17,6 +17,8 @@ mod mouse_memory;
 #[cfg(target_os = "windows")]
 mod mouse_offline;
 #[cfg(target_os = "windows")]
+mod mouse_status;
+#[cfg(target_os = "windows")]
 mod onboard_guard;
 #[cfg(target_os = "windows")]
 mod tray_badge;
@@ -1859,6 +1861,32 @@ async fn stop_runtime(
     Ok(summary)
 }
 
+/// Restarts capture with the config on disk (the capture helper died, or the
+/// key-button signals switched). The runtime state stays "running": only the
+/// backend is replaced. Decided under the controller lock, like every other
+/// start: `Ok(false)` when the runtime is not running or `still_wanted` says a
+/// reload / stop-start already replaced what this restart was for.
+#[cfg(target_os = "windows")]
+pub(crate) fn restart_capture(app: &AppHandle, still_wanted: impl Fn() -> bool) -> Result<bool, String> {
+    let config_dir = resolve_config_dir(app).map_err(|error| error.message)?;
+    let loaded = load_or_initialize_config(&config_dir).map_err(|error| error.to_string())?;
+    let store = app.state::<Arc<Mutex<RuntimeStore>>>().inner().clone();
+    let controller = app.state::<Arc<Mutex<RuntimeController>>>();
+    let mut controller = controller.lock().map_err(|_| "runtime controller lock poisoned".to_string())?;
+    if !store.lock().recover_poison().is_running() || !still_wanted() {
+        return Ok(false);
+    }
+    let result = controller.restart(app.clone(), store.clone(), loaded.config, app.package_info().name.clone());
+    if result.is_err() {
+        // `restart` already dropped the old backend: say so, as `reload_runtime`
+        // does, and in the tray — nobody may be watching the window.
+        let stopped_summary = store.lock().recover_poison().stop();
+        let _ = app.emit(EVENT_RUNTIME_STOPPED, &stopped_summary);
+        rebuild_tray_menu(app);
+    }
+    result.map(|()| true)
+}
+
 #[tauri::command]
 async fn reload_runtime(
     app: AppHandle,
@@ -2788,8 +2816,8 @@ async fn with_mouse_settings(
 #[tauri::command]
 async fn get_native_model() -> Result<device_catalog::NativeModelInfo, CommandError> {
     tauri::async_runtime::spawn_blocking(|| match mouse_memory::VendorDevice::open_connected() {
-        Ok(device) => device.model().info(true),
-        Err(_) => mouse_memory::config_model().info(false),
+        Ok(device) => device.model().info(true, mouse_memory::consumer_signals_enabled()),
+        Err(_) => mouse_memory::config_model().info(false, mouse_memory::consumer_signals_enabled()),
     })
     .await
     .map_err(|e| CommandError::internal(format!("native model task failed: {e}")))
@@ -2814,8 +2842,69 @@ async fn get_device_report() -> Result<String, CommandError> {
 #[cfg(target_os = "windows")]
 #[tauri::command]
 fn open_device_report_issue() -> Result<(), CommandError> {
-    const URL: &str = "https://github.com/danscMax/Sidearm/issues/new?title=Device%20report%3A%20&body=Paste%20the%20report%20Sidearm%20copied%20to%20the%20clipboard%20below%20(Ctrl%2BV).%0A%0A";
+    // The form (.github/ISSUE_TEMPLATE/device_report.yml) asks for the report,
+    // the connection and notes, and labels the issue `device-report`.
+    const URL: &str = "https://github.com/danscMax/Sidearm/issues/new?template=device_report.yml&title=Device%20report%3A%20";
     crate::platform::shell::open_target(URL).map_err(CommandError::internal)
+}
+
+/// Mouse-path states and pending notices (`mouse_status::snapshot`); the
+/// pending notices are taken.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn get_mouse_status() -> Vec<mouse_status::StatusEvent> {
+    mouse_status::snapshot()
+}
+
+/// Switches what the key buttons send: consumer signals (`true`) or
+/// `F13`..`F24` — the file `onboard-key-signals` next to the config, kept for
+/// the next start. Returns once the mouse holds the new signals and a running
+/// capture has restarted to read (or stop reading) them; a stopped one stays
+/// stopped. A mouse that cannot take the records now (asleep) gets them from
+/// the guard later.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn set_key_signals(app: AppHandle, consumer: bool) -> Result<(), CommandError> {
+    tauri::async_runtime::spawn_blocking(move || switch_key_signals(&app, consumer))
+        .await
+        .map_err(|e| CommandError::internal(format!("signal switch task failed: {e}")))?
+}
+
+#[cfg(target_os = "windows")]
+fn switch_key_signals(app: &AppHandle, consumer: bool) -> Result<(), CommandError> {
+    let file = resolve_config_dir(app)?.join(mouse_memory::KEY_SIGNALS_FILE);
+    let result = if consumer {
+        std::fs::remove_file(&file).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+    } else {
+        std::fs::write(&file, b"")
+    };
+    result.map_err(|e| CommandError::internal(format!("{}: {e}", file.display())))?;
+    // Before the flag flips: a guard tick in between must already know the
+    // rewrite it is about to make is the user's own.
+    onboard_guard::USER_SWITCHED_SIGNALS.store(true, std::sync::atomic::Ordering::SeqCst);
+    mouse_memory::set_consumer_signals(consumer);
+    log::info!("[onboard] key buttons now send {}", if consumer { "consumer signals" } else { "F13..F24" });
+    let config_dir = resolve_config_dir(app)?;
+    let rewritten = load_or_initialize_config(&config_dir)
+        .map_err(|error| error.to_string())
+        .and_then(|loaded| {
+            mouse_memory::VendorDevice::open_connected()?
+                .apply_bindings(&mouse_memory::onboard_bindings(&loaded.config))
+        });
+    if let Err(message) = rewritten {
+        log::info!("[onboard] signal switch left to the guard: {message}");
+        onboard_guard::request_check();
+    }
+    restart_capture(app, || true).map_err(|message| CommandError::new("runtime_reload_failed", message, None))?;
+    Ok(())
+}
+
+/// Opens Windows Settings → Apps → Startup, where Razer Synapse's autostart
+/// is turned off (the `razerStarted` toast's action). A fixed target.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn open_startup_apps_settings() -> Result<(), CommandError> {
+    crate::platform::shell::open_target("ms-settings:startupapps").map_err(CommandError::internal)
 }
 
 /// Battery, DPI and poll rate as the mouse reports them now.
@@ -2829,7 +2918,7 @@ async fn get_mouse_settings() -> Result<mouse_memory::MouseSettings, CommandErro
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn set_mouse_dpi(dpi: u16) -> Result<mouse_memory::MouseSettings, CommandError> {
-    with_mouse_settings(move |device| device.set_dpi(dpi)).await
+    with_mouse_settings(move |device| device.set_dpi(dpi, true)).await
 }
 
 /// Sets the mouse poll rate (125/500/1000 Hz) and returns the settings read back.
@@ -3288,6 +3377,9 @@ pub fn run() {
                     if key_signals {
                         log::info!("[onboard] `{}` present: key buttons send F13..F24", mouse_memory::KEY_SIGNALS_FILE);
                     }
+                    if std::fs::remove_file(config_dir.join(mouse_offline::OFFLINE_FAILED_FILE)).is_ok() {
+                        mouse_status::notice(None, mouse_status::StatusKind::OfflineNotStored);
+                    }
                     onboard_guard::spawn(
                         app.handle().clone(),
                         runtime_store_for_guard.clone(),
@@ -3666,6 +3758,9 @@ pub fn run() {
             get_native_model,
             get_device_report,
             open_device_report_issue,
+            get_mouse_status,
+            set_key_signals,
+            open_startup_apps_settings,
             get_mouse_settings,
             set_mouse_dpi,
             set_mouse_poll_rate

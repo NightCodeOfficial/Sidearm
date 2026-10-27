@@ -10,6 +10,16 @@ use std::time::{Duration, Instant};
 use crate::mouse_memory::ConsumerSignal;
 
 const HS_PREFIX: &str = "HS:";
+/// A hold with no report for this long is released: the device reports changes
+/// only, so a mouse that powered off mid-press (dongle still present) never
+/// sends the release. It cannot be asked instead — measured 2026-10-27: its
+/// `HidD_GetInputReport` answers "nothing held" while a button is held.
+// shortcut: a fixed bound also cuts a genuine hold this long (push-to-talk past
+// 10 min); make it a setting if someone holds a button that long.
+const HOLD_GIVE_UP_AFTER: Duration = Duration::from_secs(600);
+/// Helper lines telling the parent whether the button signals can be read.
+pub(super) const STATUS_UNREADABLE: &str = "STATUS:buttonsUnreadable";
+pub(super) const STATUS_READABLE: &str = "STATUS:buttonsReadable";
 
 /// Usages held according to one input report: after the report id, little-
 /// endian `u16` slots up to the first zero (`02 10 00` = usage `0x10` down,
@@ -37,11 +47,18 @@ pub(super) struct Translator {
     held: Vec<(u16, Instant)>,
     delay: Duration,
     period: Duration,
+    /// When the device last told its state (a report or an answered query).
+    last_report: Instant,
 }
 
 impl Translator {
     pub(super) fn new(signals: Vec<ConsumerSignal>, delay: Duration, period: Duration) -> Self {
-        Self { signals, held: Vec::new(), delay, period }
+        Self { signals, held: Vec::new(), delay, period, last_report: Instant::now() }
+    }
+
+    /// Whether something is held and the device has said nothing for `after`.
+    pub(super) fn silent_hold(&self, now: Instant, after: Duration) -> bool {
+        !self.held.is_empty() && now.saturating_duration_since(self.last_report) >= after
     }
 
     fn encoded_key(&self, usage: u16) -> Option<&str> {
@@ -52,6 +69,7 @@ impl Translator {
     /// for every newly held one. A report repeating the held set yields none.
     pub(super) fn report(&mut self, usages: &[u16], now: Instant, hyper: bool) -> Vec<String> {
         let prefix = if hyper { HS_PREFIX } else { "" };
+        self.last_report = now;
         let mut lines = Vec::new();
         let released: Vec<u16> =
             self.held.iter().map(|(u, _)| *u).filter(|u| !usages.contains(u)).collect();
@@ -143,7 +161,12 @@ pub(super) fn spawn_reader(signals: Vec<ConsumerSignal>, report_id: u8, hyper: f
                         return;
                     }
                     // Warn level: the parent logs it as a warning — while this
-                    // lasts the key buttons do nothing.
+                    // lasts the key buttons do nothing; the status line puts it
+                    // in the Mouse tab.
+                    // The parent keeps the state, so repeating it is harmless.
+                    if !emit(&[STATUS_UNREADABLE.to_string()]) {
+                        return;
+                    }
                     if message != last_error {
                         log::warn!("[consumer] no button signals right now: {message}");
                         last_error = message;
@@ -180,11 +203,8 @@ fn read_until_lost(translator: &mut Translator, report_id: u8, hyper: fn() -> bo
     use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
     use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 
-    // The registry also lists leaves of devices no longer present: the first
-    // one that opens is the live collection.
-    let mut last_error = String::new();
-    let mut opened = None;
-    for path in crate::mouse_memory::consumer_collection_paths()? {
+    let paths = crate::mouse_memory::consumer_collection_paths()?;
+    let (handle, path) = crate::mouse_memory::open_first(&paths, |path| {
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
         let handle = unsafe {
             CreateFileW(
@@ -198,21 +218,24 @@ fn read_until_lost(translator: &mut Translator, report_id: u8, hyper: fn() -> bo
             )
         };
         if handle == INVALID_HANDLE_VALUE {
-            last_error = format!("CreateFileW({path}): {}", std::io::Error::last_os_error());
+            Err(format!("CreateFileW({path}): {}", std::io::Error::last_os_error()))
         } else {
-            opened = Some((handle, path));
-            break;
+            Ok((handle, path.to_string()))
         }
-    }
-    let Some((handle, path)) = opened else {
-        return Err(last_error);
-    };
+    })?;
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event.is_null() {
         unsafe { CloseHandle(handle) };
         return Err(format!("CreateEventW: {}", std::io::Error::last_os_error()));
     }
     log::info!("[consumer] reading button signals from {path}");
+    if !emit(&[STATUS_READABLE.to_string()]) {
+        unsafe {
+            CloseHandle(event);
+            CloseHandle(handle);
+        }
+        return Ok(());
+    }
 
     // Larger than the 16-byte report; HID reads need at least the report size.
     let mut buffer = [0u8; 64];
@@ -235,7 +258,13 @@ fn read_until_lost(translator: &mut Translator, report_id: u8, hyper: fn() -> bo
             match unsafe { WaitForSingleObject(event, timeout) } {
                 WAIT_OBJECT_0 => break None,
                 WAIT_TIMEOUT => {
-                    if !emit(&translator.repeats(Instant::now(), hyper())) {
+                    let now = Instant::now();
+                    let mut lines = translator.repeats(now, hyper());
+                    if translator.silent_hold(now, HOLD_GIVE_UP_AFTER) {
+                        log::warn!("[consumer] hold released after {HOLD_GIVE_UP_AFTER:?} without a report");
+                        lines.extend(translator.release_all(hyper()));
+                    }
+                    if !emit(&lines) {
                         break Some(Ok(()));
                     }
                 }
@@ -317,6 +346,21 @@ mod tests {
         assert_eq!(t.repeats(start + Duration::from_millis(600), true), ["HS:REPEAT:F13"]);
         t.report(&[], start + Duration::from_millis(650), false);
         assert!(t.repeats(start + Duration::from_secs(5), false).is_empty());
+    }
+
+    /// Only a hold the device has been silent about counts as silent.
+    #[test]
+    fn a_hold_is_silent_only_without_reports() {
+        let mut t = translator();
+        let start = Instant::now();
+        assert!(!t.silent_hold(start + Duration::from_secs(60), Duration::from_secs(5)), "nothing held");
+        t.report(&[0x10], start, false);
+        assert!(!t.silent_hold(start + Duration::from_secs(4), Duration::from_secs(5)));
+        assert!(t.silent_hold(start + Duration::from_secs(5), Duration::from_secs(5)));
+        // A report repeating the held set restarts the silence.
+        assert!(t.report(&[0x10], start + Duration::from_secs(5), false).is_empty());
+        assert!(!t.silent_hold(start + Duration::from_secs(9), Duration::from_secs(5)));
+        assert_eq!(t.report(&[], start + Duration::from_secs(10), false), ["UP:F13"]);
     }
 
     #[test]

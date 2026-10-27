@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,13 @@ const POLL_INTERVAL: Duration = Duration::from_secs(20);
 /// refused the query (a sleeping wireless mouse answers status `0x04`), the
 /// runtime is not running yet, or Razer's engine is up.
 const FAST_POLL: Duration = Duration::from_secs(3);
+/// Without a reason to suspect drift, a tick reads only the mode (one command);
+/// the full scan — every guarded record and the battery, ~23 commands holding
+/// the device lock for over a second — runs at most this often.
+const FULL_SCAN_EVERY: Duration = Duration::from_secs(300);
+/// The guard reports the mouse as unreachable after failing this long (an
+/// asleep mouse is not unreachable).
+const UNREACHABLE_AFTER: Duration = Duration::from_secs(60);
 /// Minimum gap between two notifications of the same kind: Razer's engine can
 /// take the device back right after we put it down, and that must not turn into a
 /// toast loop.
@@ -99,8 +106,15 @@ pub struct TakeoverEvent {
 /// How one check ended.
 #[derive(Debug, PartialEq, Eq)]
 enum Verdict {
-    /// The mouse could not be asked (absent, asleep, busy) — no evidence either way.
+    /// No catalog mouse is plugged in.
+    Absent,
+    /// The mouse could not be asked (busy, not openable) — no evidence either way.
     Unreadable,
+    /// The mouse did not answer (asleep or out of range): nothing can change it
+    /// meanwhile, so the guard waits a whole period instead of polling it.
+    Asleep,
+    /// Light tick: the mode is `Normal`, the records were not read.
+    ModeOnly,
     /// Mode and every guarded record matched; `usize` = guarded buttons.
     Clean(usize),
     /// Something was taken back (already reported).
@@ -132,25 +146,38 @@ pub fn apply_profile_mouse_settings(profile: &crate::config::Profile) {
         return;
     }
     let name = profile.name.clone();
+    // Every switch spawns its own thread and the device lock does not keep their
+    // order: a switch that waited behind a newer one must not undo it.
+    let generation = PROFILE_SWITCHES.fetch_add(1, Ordering::SeqCst) + 1;
     std::thread::Builder::new()
         .name("profile-mouse".into())
         .spawn(move || {
             let result = VendorDevice::open_connected().and_then(|device| {
+                if PROFILE_SWITCHES.load(Ordering::SeqCst) != generation {
+                    return Ok(None);
+                }
+                let mut written = false;
                 if let Some(hz) = poll_rate_hz
                     && device.poll_rate_hz()? != hz
                 {
                     device.set_poll_rate_hz(hz)?;
+                    written = true;
                 }
+                // Live only: the mouse keeps its stored DPI for use without
+                // Sidearm, and a switch per alt-tab must not wear its storage.
                 if let Some(dpi) = dpi
                     && device.dpi()? != dpi
                 {
-                    device.set_dpi(dpi)?;
+                    device.set_dpi(dpi, false)?;
+                    written = true;
                 }
-                Ok(())
+                Ok(Some(written))
             });
             match result {
-                Ok(()) => log::info!(
-                    "[onboard-guard] profile `{name}`: mouse DPI {dpi:?}, poll {poll_rate_hz:?} Hz applied"
+                Ok(None) => log::debug!("[onboard-guard] profile `{name}`: superseded by a newer switch"),
+                Ok(Some(false)) => log::debug!("[onboard-guard] profile `{name}`: mouse settings already in place"),
+                Ok(Some(true)) => log::info!(
+                    "[onboard-guard] profile `{name}`: mouse DPI {dpi:?}, poll {poll_rate_hz:?} Hz written"
                 ),
                 Err(message) => {
                     log::warn!("[onboard-guard] profile `{name}`: mouse settings not applied: {message}")
@@ -159,6 +186,12 @@ pub fn apply_profile_mouse_settings(profile: &crate::config::Profile) {
         })
         .ok();
 }
+
+/// Set by the Mouse tab's signal switch: the rewrite it causes is not news.
+pub static USER_SWITCHED_SIGNALS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Profile switches so far; the newest one owns the mouse's DPI / poll rate.
+static PROFILE_SWITCHES: AtomicU64 = AtomicU64::new(0);
 
 /// Asks the guard for a check now instead of at its next tick.
 pub fn request_check() {
@@ -202,13 +235,18 @@ fn run(
     let mut last_notified: Option<(TakeoverKind, Instant)> = None;
     let mut razer_was_running = false;
     let mut last_clean: Option<usize> = None;
-    // The first check runs right away instead of after a whole period.
+    // The first check runs right away instead of after a whole period, and scans
+    // everything.
     let mut wait = Duration::ZERO;
+    let mut last_full: Option<Instant> = None;
+    let mut suspect = true;
+    let mut unreadable_since: Option<Instant> = None;
     loop {
-        match requests.recv_timeout(wait) {
-            Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+        let requested = match requests.recv_timeout(wait) {
+            Ok(()) => true,
+            Err(RecvTimeoutError::Timeout) => false,
             Err(RecvTimeoutError::Disconnected) => return,
-        }
+        };
         while requests.try_recv().is_ok() {}
 
         let running = runtime_store
@@ -216,6 +254,10 @@ fn run(
             .map(|store| store.is_running())
             .unwrap_or(false);
         if !running {
+            // A stopped Sidearm reads nothing: its warnings would be stale.
+            crate::mouse_status::set_state(Some(app), crate::mouse_status::StatusKind::MouseUnreachable, false);
+            crate::mouse_status::set_state(Some(app), crate::mouse_status::StatusKind::ButtonsUnreadable, false);
+            unreadable_since = None;
             wait = FAST_POLL;
             continue;
         }
@@ -245,12 +287,39 @@ fn run(
             continue;
         }
 
+        // Only Razer's engine rewrites the records, so a full scan is worth its
+        // bus traffic on request, while Razer runs, after anything but a clean
+        // check (a wake-up included), and every FULL_SCAN_EVERY as a backstop.
+        let full = requested
+            || razer_running
+            || suspect
+            || last_full.is_none_or(|at| at.elapsed() >= FULL_SCAN_EVERY);
         let verdict = check_once(
             app,
             runtime_store,
             config_dir,
             &mut last_notified,
+            full,
         );
+        if full {
+            last_full = Some(Instant::now());
+        }
+        // `Absent` stays suspect: a mouse plugged back in gets a full scan.
+        suspect = !matches!(verdict, Verdict::Clean(_) | Verdict::ModeOnly | Verdict::ReadOnly);
+        if full {
+            // A full check consumed the user's switch, or found nothing to
+            // switch: either way the flag must not swallow a later notice.
+            USER_SWITCHED_SIGNALS.store(false, Ordering::SeqCst);
+        }
+        if verdict == Verdict::Unreadable {
+            let since = *unreadable_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= UNREACHABLE_AFTER {
+                crate::mouse_status::set_state(Some(app), crate::mouse_status::StatusKind::MouseUnreachable, true);
+            }
+        } else {
+            unreadable_since = None;
+            crate::mouse_status::set_state(Some(app), crate::mouse_status::StatusKind::MouseUnreachable, false);
+        }
         match verdict {
             Verdict::Clean(buttons) if last_clean != Some(buttons) => {
                 record_clean(runtime_store, buttons);
@@ -259,10 +328,11 @@ fn run(
             Verdict::TookBack => last_clean = None,
             _ => {}
         }
-        wait = if verdict == Verdict::Unreadable || razer_running {
-            FAST_POLL
-        } else {
-            POLL_INTERVAL
+        wait = match verdict {
+            Verdict::Asleep | Verdict::Absent => POLL_INTERVAL,
+            Verdict::Unreadable => FAST_POLL,
+            _ if razer_running => FAST_POLL,
+            _ => POLL_INTERVAL,
         };
     }
 }
@@ -272,13 +342,17 @@ fn check_once(
     runtime_store: &Arc<Mutex<RuntimeStore>>,
     config_dir: &Path,
     last_notified: &mut Option<(TakeoverKind, Instant)>,
+    full: bool,
 ) -> Verdict {
-    let Ok(device) = VendorDevice::open_connected() else {
-        // No mouse, or its collection is not openable right now.
-        return Verdict::Unreadable;
+    let device = match VendorDevice::open_connected() {
+        Ok(device) => device,
+        Err(message) if message == crate::mouse_memory::NOT_CONNECTED => return Verdict::Absent,
+        // Its collection is not openable right now.
+        Err(_) => return Verdict::Unreadable,
     };
     if !device.model().verified {
-        if let Some(config) = read_config(config_dir)
+        if full
+            && let Some(config) = read_config(config_dir)
             && let Ok(percent) = device.battery_percent()
         {
             report_battery(app, &config, config_dir, percent);
@@ -294,28 +368,40 @@ fn check_once(
         Ok(mode) => mode,
         Err(message) => {
             log::debug!("[onboard-guard] mode unreadable: {message}");
-            return Verdict::Unreadable;
+            return if crate::mouse_memory::is_no_response(&message) {
+                Verdict::Asleep
+            } else {
+                Verdict::Unreadable
+            };
         }
     };
     let mut took_back = false;
     if mode != MODE_NORMAL {
-        let restored = device.ensure_normal_mode().is_ok();
-        notify(
-            app,
-            runtime_store,
-            last_notified,
-            TakeoverEvent {
-                kind: TakeoverKind::Mode,
-                restored,
-                controls: Vec::new(),
-            },
-        );
-        if !restored {
-            // Still in driver mode: the stored records say nothing about what
-            // the user's buttons will do, so re-check on the next tick.
-            return Verdict::TookBack;
+        let result = device.ensure_normal_mode();
+        // `ensure_normal_mode` reads the mode again first: `Normal` there means
+        // the first read caught a transition, not a takeover — nothing to report.
+        if !matches!(result, Ok(before) if before == MODE_NORMAL) {
+            let restored = result.is_ok();
+            notify(
+                app,
+                runtime_store,
+                last_notified,
+                TakeoverEvent {
+                    kind: TakeoverKind::Mode,
+                    restored,
+                    controls: Vec::new(),
+                },
+            );
+            if !restored {
+                // Still in driver mode: the stored records say nothing about what
+                // the user's buttons will do, so re-check on the next tick.
+                return Verdict::TookBack;
+            }
+            took_back = true;
         }
-        took_back = true;
+    }
+    if !full && !took_back {
+        return Verdict::ModeOnly;
     }
 
     let Some(config) = read_config(config_dir) else {
@@ -354,6 +440,10 @@ fn check_once(
             }
             if restored && foreign_keys.is_empty() && drifted_native.is_empty() {
                 log::info!("[onboard-guard] button signals switched to the configured kind: {drifted_keys:?}");
+                // The user's own switch in the Mouse tab needs no announcement.
+                if !USER_SWITCHED_SIGNALS.swap(false, Ordering::SeqCst) {
+                    crate::mouse_status::notice(Some(app), crate::mouse_status::StatusKind::SignalsSwitched);
+                }
                 return Verdict::TookBack;
             }
             let reported = if restored { foreign_keys } else { drifted_keys };

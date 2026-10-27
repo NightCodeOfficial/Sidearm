@@ -25,6 +25,11 @@ export interface OnboardReport {
  */
 const KEY_CONTROL = /^(thumb_(0[1-9]|1[0-2])|top_aux_0[12])$/;
 
+/** Whether `controlId` is one of the built-in Naga's key buttons (thumbs, top buttons). */
+export function isKeyButton(controlId: string): boolean {
+  return KEY_CONTROL.test(controlId);
+}
+
 /**
  * Standard-layer key bindings (thumbs and top buttons) the mouse should emit on its own. Only the
  * standard layer reaches onboard memory: the mouse has no notion of Sidearm's
@@ -78,7 +83,27 @@ export interface NativeModelInfo {
   verified: boolean;
   /** The model is plugged in now (else it is the config's model). */
   connected: boolean;
+  /** `null`: the model has no consumer path; else whether its key buttons send
+   *  consumer signals (read by Sidearm) rather than `F13`..`F24`. */
+  consumerSignals: boolean | null;
 }
+
+/** Mouse-path states (shown in the Mouse tab) and one-time notices (toasts). */
+export type MouseStatusKind =
+  | "helperLost"
+  | "buttonsUnreadable"
+  | "mouseUnreachable"
+  | "offlineNotStored"
+  | "signalsSwitched";
+
+/** Rust `mouse_status::StatusEvent` (`mouse_status` event, `get_mouse_status`). */
+export interface MouseStatusEvent {
+  kind: MouseStatusKind;
+  active: boolean;
+}
+
+/** Kinds shown once as a toast; the rest are states held until cleared. */
+export const MOUSE_STATUS_NOTICES: readonly MouseStatusKind[] = ["offlineNotStored", "signalsSwitched"];
 
 /**
  * What the backend's takeover guard had to take back from Razer's engine: the

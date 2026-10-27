@@ -1,0 +1,42 @@
+name: Device Report
+description: Help verify a mouse model — paste the report from Sidearm's "Help verify" button
+title: "Device report: "
+labels: ["device-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Sidearm copied the report to your clipboard: paste it below with Ctrl+V.
+        It only reads the mouse — nothing on it was changed. It contains no serial number.
+
+  - type: textarea
+    id: report
+    attributes:
+      label: Device report
+      description: Paste the report Sidearm copied.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How is the mouse connected?
+      options:
+        - Wireless receiver (dongle)
+        - USB cable
+        - Bluetooth
+    validations:
+      required: true
+
+  - type: input
+    id: side-plate
+    attributes:
+      label: Side plate (Naga Pro only)
+      placeholder: "12-button / 6-button / 2-button"
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything else — which buttons you pressed, what Razer Synapse shows for them, problems you noticed.

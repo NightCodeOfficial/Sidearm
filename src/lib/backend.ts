@@ -18,6 +18,7 @@ import type {
 import type {
   MouseBatteryEvent,
   MouseSettings,
+  MouseStatusEvent,
   NativeModelInfo,
   OnboardBinding,
   OnboardReport,
@@ -114,6 +115,22 @@ export async function getDeviceReport(): Promise<string> {
 /** Opens a new GitHub issue for a device report in the browser. */
 export async function openDeviceReportIssue(): Promise<void> {
   return invoke<void>("open_device_report_issue");
+}
+
+/** Active mouse-path states plus the notices not shown yet (which it takes). */
+export async function getMouseStatus(): Promise<MouseStatusEvent[]> {
+  return invoke<MouseStatusEvent[]>("get_mouse_status");
+}
+
+/** Key buttons send consumer signals (`true`) or `F13`..`F24`; restart the
+ *  runtime afterwards so capture follows. */
+export async function setKeySignals(consumer: boolean): Promise<void> {
+  return invoke<void>("set_key_signals", { consumer });
+}
+
+/** Opens Windows Settings → Apps → Startup (to turn off Razer Synapse's autostart). */
+export async function openStartupAppsSettings(): Promise<void> {
+  return invoke<void>("open_startup_apps_settings");
 }
 
 /** Battery, DPI and poll rate as the mouse reports them now. */
@@ -441,6 +458,14 @@ export async function listenOnboardTakeover(
   onPayload: (payload: OnboardTakeoverEvent) => void,
 ): Promise<UnlistenFn> {
   return listenEvent("onboard_takeover", onPayload);
+}
+
+/** Fires when a mouse-path state changes or a notice is raised (then take it
+ *  with `getMouseStatus`). */
+export async function listenMouseStatus(
+  onPayload: (payload: MouseStatusEvent) => void,
+): Promise<UnlistenFn> {
+  return listenEvent("mouse_status", onPayload);
 }
 
 /** Fires when the guard read a new battery level; `low` marks the one reading

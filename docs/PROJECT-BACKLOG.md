@@ -367,7 +367,7 @@ Done 2026-05-23: **UI-CLEAN-001** — removed the no-op clipboardPaste selector 
 - UIPI research: `docs/research/UIPI-BYPASS-RESEARCH.md`
 - runtime pipeline: `docs/RUNTIME-PIPELINE.md`
 - config schema: `docs/CONFIG-SCHEMA-V2.md`
-- device catalog / verification: `docs/DEVICE-CATALOG.md`,
+- device catalog / verification: `docs/ADDING-A-MODEL.md`,
   `docs/DEVICE-VERIFICATION-MATRIX.md`
 - ADRs: `docs/adr/0001…0004`
 - changelog: `CHANGELOG.md`

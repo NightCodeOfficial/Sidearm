@@ -45,7 +45,13 @@ import {
   listenElevatedForeground,
   listenMouseDefaultsSuspected,
   listenMouseBattery,
+  listenMouseStatus,
   listenOnboardTakeover,
+  getMouseStatus,
+  getNativeModel,
+  openStartupAppsSettings,
+  reloadRuntime,
+  setKeySignals,
   listenSingleInstanceBlocked,
   listenTrayProfileChanged,
   listenQuickRuleStart,
@@ -56,7 +62,8 @@ import {
   restoreOnboardControl,
   setAdminAutostart,
 } from "./lib/backend";
-import { displayNameForControl, labelForLayer, relativeTime } from "./lib/labels";
+import { displayNameForControl, displayNameForControlId, labelForLayer, relativeTime } from "./lib/labels";
+import { MOUSE_STATUS_NOTICES, type MouseStatusKind } from "./lib/onboard-mapping";
 import { exportProfileToFile } from "./lib/profile-transfer";
 import { isBuiltinControl } from "./lib/onboard-mapping";
 import type { ErrorActionKind } from "./lib/errors";
@@ -240,16 +247,22 @@ function App() {
   // user why their buttons moved, and offer a forced re-apply.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void listenOnboardTakeover(({ kind, restored }) => {
+    void listenOnboardTakeover(({ kind, restored, controls }) => {
       // Nothing to take back yet — the guard now checks every few seconds.
       if (kind === "razerStarted") {
-        showToast(t("onboard.razerStarted"), "warning");
+        showToast(t("onboard.razerStarted"), "warning", {
+          label: t("onboard.razerStartedAction"),
+          onClick: () => {
+            void openStartupAppsSettings().catch((e: unknown) => showToast(normalizeCommandError(e).message, "warning"));
+          },
+        });
         return;
       }
       const messageKey = kind === "mode"
         ? (restored ? "onboard.takeoverMode" : "onboard.takeoverModeFailed")
         : (restored ? "onboard.takeoverMappings" : "onboard.takeoverMappingsFailed");
-      showToast(t(messageKey), "warning", {
+      const names = controls.map((id) => displayNameForControlId(id)).join(", ");
+      showToast(t(messageKey, { controls: names }), "warning", {
         label: t("onboard.restoreAction"),
         onClick: () => {
           void restoreOnboardControl()
@@ -259,6 +272,67 @@ function App() {
       });
     }).then((fn) => {
       unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, [showToast, t]);
+
+  // Mouse-path states feed the Mouse tab; notices (kept by the backend until
+  // taken, so one raised at startup is not lost) become a toast.
+  const [mouseStates, setMouseStates] = useState<MouseStatusKind[]>([]);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    // A window started hidden in the tray would show a toast nobody sees: the
+    // backend keeps the notices until a visible window takes them.
+    const takeNotices = (initial: boolean) => {
+      if (document.hidden) {
+        document.addEventListener("visibilitychange", () => takeNotices(initial), { once: true });
+        return;
+      }
+      void getMouseStatus().then((events) => {
+        for (const { kind } of events) {
+          if (!MOUSE_STATUS_NOTICES.includes(kind)) continue;
+          if (kind === "offlineNotStored") {
+            showToast(t("mouse.noticeOfflineNotStored"), "warning");
+            continue;
+          }
+          void getNativeModel().then(({ consumerSignals }) => {
+            if (!consumerSignals) {
+              showToast(t("mouse.noticeSignalsKeys"), "success");
+              return;
+            }
+            showToast(t("mouse.noticeSignalsConsumer"), "warning", {
+              label: t("mouse.signalsRevert"),
+              onClick: () => {
+                void setKeySignals(false).catch((e: unknown) => showToast(normalizeCommandError(e).message, "warning"));
+              },
+            });
+          });
+        }
+        // Later snapshots only take notices: the events keep the states current.
+        if (initial) {
+          const states = events.filter((e) => !MOUSE_STATUS_NOTICES.includes(e.kind)).map((e) => e.kind);
+          setMouseStates((current) => [...new Set([...current, ...states])]);
+        }
+      });
+    };
+    // Listen first, then take the snapshot: a change in between is not lost.
+    void listenMouseStatus(({ kind, active }) => {
+      if (MOUSE_STATUS_NOTICES.includes(kind)) {
+        takeNotices(false);
+        return;
+      }
+      setMouseStates((current) => (active ? [...current.filter((k) => k !== kind), kind] : current.filter((k) => k !== kind)));
+      if (kind === "helperLost" && active) {
+        showToast(t("mouse.statusHelperLost"), "warning", {
+          label: t("mouse.statusRestart"),
+          onClick: () => {
+            void reloadRuntime().catch((e: unknown) => showToast(normalizeCommandError(e).message, "warning"));
+          },
+        });
+      }
+    }).then((fn) => {
+      unlisten = fn;
+      takeNotices(true);
     });
     return () => unlisten?.();
   }, [showToast, t]);
@@ -1080,6 +1154,7 @@ function App() {
                 runtimeProfileId={runtimeProfileId}
                 setSelectedProfileId={setSelectedProfileId}
                 updateDraft={updateDraft}
+                mouseStates={mouseStates}
               />
             ) : workspaceMode === "settings" ? (
               <SettingsWorkspace

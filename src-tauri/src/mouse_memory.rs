@@ -79,6 +79,8 @@ const CLASS_CONTROL: u8 = 0x00;
 /// Command class that answers button queries.
 const CLASS_BUTTON: u8 = 0x02;
 const CMD_SET_MODE: u8 = 0x04;
+/// Firmware version: reply bytes 8 and 9 are major and minor (OpenRazer).
+const CMD_GET_FIRMWARE: u8 = 0x81;
 const CMD_GET_MODE: u8 = 0x84;
 /// Per-button query. Unlike the slot query the record path uses, this one answers
 /// with the record the device actually holds, and it needs no preceding write.
@@ -107,9 +109,11 @@ const CMD_GET_BATTERY: u8 = 0x80;
 /// Poll rate get/set live in the control class next to the device mode.
 const CMD_SET_POLL_RATE: u8 = 0x05;
 const CMD_GET_POLL_RATE: u8 = 0x85;
-/// Storage selector of DPI writes: `0x01` keeps the value in the mouse across
-/// power cycles (the device answered its stored DPI with it).
+/// Storage selector of DPI commands: `0x01` keeps the value in the mouse across
+/// power cycles (the device answered its stored DPI with it), `0x00` is the live
+/// value only — a per-profile switch, which must not wear the mouse's storage.
 const VARSTORE: u8 = 0x01;
+const NOSTORE: u8 = 0x00;
 /// Battery level 0..=255 as a rounded percentage.
 pub fn battery_percent_from_raw(raw: u8) -> u8 {
     ((u16::from(raw) * 100 + 127) / 255) as u8
@@ -118,6 +122,10 @@ pub fn battery_percent_from_raw(raw: u8) -> u8 {
 const GET_BUTTON_ARGS: [u8; 10] = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 const COMMAND_STATUS_OK: u8 = 0x02;
 const COMMAND_STATUS_BUSY: u8 = 0x01;
+/// Status of a wireless mouse that did not answer: asleep or out of range.
+const COMMAND_STATUS_NO_RESPONSE: u8 = 0x04;
+/// Error text of a command the mouse did not answer ([`is_no_response`]).
+const NO_RESPONSE: &str = "the mouse did not answer (asleep or out of range)";
 /// The device answers `busy` while it finishes a write; retry, don't fail.
 const COMMAND_RETRIES: u32 = 8;
 const COMMAND_SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
@@ -131,7 +139,10 @@ const MODE_CONFIRM_WAIT: std::time::Duration = std::time::Duration::from_millis(
 /// Category byte of a button record that emits a key.
 const CATEGORY_KEY: u8 = 0x02;
 
-/// `find_interface_path` error for a device with no interface in the registry
+/// `open_connected` error when no catalog model is plugged in at all — absent,
+/// not unreachable.
+pub const NOT_CONNECTED: &str = "no supported Razer mouse is connected";
+/// `find_paths` error for a device with no interface in the registry
 /// (not plugged in).
 const NO_INTERFACE: &str = "our device has no HID interface in the registry";
 /// Registry home of device interface symbolic link names.
@@ -191,6 +202,10 @@ pub const KEY_SIGNALS_FILE: &str = "onboard-key-signals";
 
 pub fn set_consumer_signals(enabled: bool) {
     CONSUMER_SIGNALS.store(enabled, Ordering::Relaxed);
+}
+
+pub fn consumer_signals_enabled() -> bool {
+    CONSUMER_SIGNALS.load(Ordering::Relaxed)
 }
 
 /// Onboard target of one binding: the button id and the record it should
@@ -443,7 +458,7 @@ impl VendorDevice {
     pub fn open_connected() -> Result<Self, String> {
         // A model that is simply not plugged in is not worth reporting; an
         // interface that exists but does not open is.
-        let mut last_error = "no supported Razer mouse is connected".to_string();
+        let mut last_error = NOT_CONNECTED.to_string();
         for model in crate::device_catalog::CATALOG {
             for pid in model.pids {
                 match Self::open(model, *pid) {
@@ -461,25 +476,34 @@ impl VendorDevice {
     fn open(model: &'static NativeModel, pid: u16) -> Result<Self, String> {
         // A panic mid-exchange leaves no state behind the lock worth refusing for.
         let exclusive = DEVICE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let path = find_interface_path(model.vid, pid, model.interface)?;
-        let mut wide: Vec<u16> = path.encode_utf16().collect();
-        wide.push(0);
-        // No requested rights: the vendor collection is held by Razer's driver
-        // and refuses GENERIC_READ|GENERIC_WRITE to non-owners.
-        let handle = unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                0,
-                0x00000003, // FILE_SHARE_READ | FILE_SHARE_WRITE
-                std::ptr::null(),
-                3,          // OPEN_EXISTING
-                0x00000080, // FILE_ATTRIBUTE_NORMAL
-                INVALID_HANDLE_VALUE,
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(format!("{}: CreateFileW({path})", Error::last_os_error()));
-        }
+        let paths = find_paths(&interface_needle(model.vid, pid, model.interface))?;
+        let handle = open_first(&paths, |path| {
+            let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+            // No requested rights: the vendor collection is held by Razer's driver
+            // and refuses GENERIC_READ|GENERIC_WRITE to non-owners.
+            let handle = unsafe {
+                CreateFileW(
+                    wide.as_ptr(),
+                    0,
+                    0x00000003, // FILE_SHARE_READ | FILE_SHARE_WRITE
+                    std::ptr::null(),
+                    3,          // OPEN_EXISTING
+                    0x00000080, // FILE_ATTRIBUTE_NORMAL
+                    INVALID_HANDLE_VALUE,
+                )
+            };
+            if handle != INVALID_HANDLE_VALUE {
+                return Ok(handle);
+            }
+            let error = Error::last_os_error();
+            // A leaf of a device no longer plugged in: absent, not failing.
+            if matches!(error.raw_os_error(), Some(2 | 3 | 1167)) {
+                // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_DEVICE_NOT_CONNECTED
+                Err(NO_INTERFACE.to_string())
+            } else {
+                Err(format!("{error}: CreateFileW({path})"))
+            }
+        })?;
         Ok(Self { handle, _exclusive: exclusive, model, pid })
     }
 
@@ -654,8 +678,13 @@ impl VendorDevice {
         let show = |read: Result<String, String>| read.unwrap_or_else(|error| format!("error: {error}"));
         let mut lines = vec![
             format!("Sidearm {} device report", env!("CARGO_PKG_VERSION")),
+            format!("Windows: {}", windows_version()),
             format!("Model: {} ({})", model.name, if model.verified { "verified" } else { "not verified" }),
             format!("VID:PID {:04X}:{:04X}, interface MI_{:02X}", model.vid, self.pid, model.interface),
+            // No serial number: the report is posted in a public issue.
+            format!("Firmware: {}", show(
+                self.command(CLASS_CONTROL, CMD_GET_FIRMWARE, &[0x00, 0x00]).map(|reply| format!("v{}.{}", reply[8], reply[9])),
+            )),
             format!("Mode: {}", show(self.mode().map(|mode| format!("{mode:#04x}")))),
             format!("DPI: {}", show(self.dpi().map(|dpi| dpi.to_string()))),
             format!("Poll rate code: {}", show(
@@ -702,23 +731,29 @@ impl VendorDevice {
         Ok(battery_percent_from_raw(reply[9]))
     }
 
-    /// Current DPI (X; this app always writes X = Y).
+    /// Current (live) DPI (X; this app always writes X = Y).
     pub fn dpi(&self) -> Result<u16, String> {
+        self.dpi_in(NOSTORE)
+    }
+
+    fn dpi_in(&self, storage: u8) -> Result<u16, String> {
         let mut args = [0u8; 7];
-        args[0] = VARSTORE;
+        args[0] = storage;
         let reply = self.command(CLASS_DPI, CMD_GET_DPI, &args)?;
         Ok(u16::from_be_bytes([reply[9], reply[10]]))
     }
 
-    /// Stores `dpi` for both axes in the mouse and requires it to read back.
-    pub fn set_dpi(&self, dpi: u16) -> Result<(), String> {
+    /// Sets `dpi` for both axes — live only, or also kept across power cycles
+    /// with `store` — and requires it to read back.
+    pub fn set_dpi(&self, dpi: u16, store: bool) -> Result<(), String> {
         let (min, max) = (self.model.dpi_min, self.model.dpi_max);
         if !(min..=max).contains(&dpi) {
             return Err(format!("DPI {dpi} is outside {min}..={max}"));
         }
+        let storage = if store { VARSTORE } else { NOSTORE };
         let [hi, lo] = dpi.to_be_bytes();
-        self.command(CLASS_DPI, CMD_SET_DPI, &[VARSTORE, hi, lo, hi, lo, 0x00, 0x00])?;
-        match self.dpi()? {
+        self.command(CLASS_DPI, CMD_SET_DPI, &[storage, hi, lo, hi, lo, 0x00, 0x00])?;
+        match self.dpi_in(storage)? {
             read if read == dpi => Ok(()),
             read => Err(format!("mouse kept DPI {read} after a write of {dpi}")),
         }
@@ -870,8 +905,14 @@ impl VendorDevice {
             std::thread::sleep(COMMAND_SETTLE);
             let reply = self.read_reply()?;
             match reply[0] {
+                // Razer's driver shares this report from another process: a
+                // reply to someone else's request is not ours — ask again.
+                COMMAND_STATUS_OK if !reply_matches(&payload, &reply) => {}
                 COMMAND_STATUS_OK => return Ok(reply),
                 COMMAND_STATUS_BUSY => std::thread::sleep(COMMAND_BUSY_WAIT),
+                COMMAND_STATUS_NO_RESPONSE => {
+                    return Err(format!("{NO_RESPONSE}: command {class:#04x}/{command:#04x}"));
+                }
                 status => {
                     return Err(format!(
                         "command {class:#04x}/{command:#04x} answered status {status:#04x}"
@@ -926,6 +967,28 @@ impl Drop for VendorDevice {
     }
 }
 
+/// Windows edition and build for the device report, e.g. `24H2 (build 26100)`.
+fn windows_version() -> String {
+    use windows_sys::Win32::System::Registry::{RRF_RT_REG_SZ, RegGetValueW};
+    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
+    let key = wide(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+    let read = |name: &str| -> String {
+        let name = wide(name);
+        let mut buffer = [0u16; 64];
+        let mut size = std::mem::size_of_val(&buffer) as u32;
+        let status = unsafe {
+            RegGetValueW(HKEY_LOCAL_MACHINE, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ,
+                         std::ptr::null_mut(), buffer.as_mut_ptr().cast(), &mut size)
+        };
+        if status != 0 {
+            return "?".to_string();
+        }
+        let len = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
+        String::from_utf16_lossy(&buffer[..len])
+    };
+    format!("{} (build {})", read("DisplayVersion"), read("CurrentBuild"))
+}
+
 /// One button line of [`VendorDevice::probe_report`]: `0x40 L0: 01 40 00 02 …`.
 fn record_line(button_id: u8, layer: u8, record: &[u8]) -> String {
     let bytes: Vec<String> = record.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -944,6 +1007,32 @@ fn build_command(transaction_id: u8, class: u8, command: u8, args: &[u8]) -> [u8
     payload[8..8 + args.len()].copy_from_slice(args);
     payload[88] = checksum(&payload);
     payload
+}
+
+/// Whether a command reply answers `request`: the device echoes the class and
+/// the command (OpenRazer checks the same two bytes).
+fn reply_matches(request: &[u8; PAYLOAD_LEN], reply: &[u8; PAYLOAD_LEN]) -> bool {
+    reply[6..8] == request[6..8]
+}
+
+/// Whether `error` is a command the mouse did not answer — asleep, not taken
+/// over: the guard backs off instead of polling it every few seconds.
+pub fn is_no_response(error: &str) -> bool {
+    error.starts_with(NO_RESPONSE)
+}
+
+/// Opens the first of `paths` that `open` accepts: the registry keeps leaves of
+/// devices no longer present (another USB port, a re-paired dongle) and only
+/// the live one opens. `Err` carries the last failure.
+pub fn open_first<T>(paths: &[String], mut open: impl FnMut(&str) -> Result<T, String>) -> Result<T, String> {
+    let mut last = NO_INTERFACE.to_string();
+    for path in paths {
+        match open(path) {
+            Ok(opened) => return Ok(opened),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
 }
 
 fn build_record(slot: u8, button_id: u8, usage: u8, modifier: u8) -> [u8; PAYLOAD_LEN] {
@@ -965,10 +1054,6 @@ fn build_record(slot: u8, button_id: u8, usage: u8, modifier: u8) -> [u8; PAYLOA
 
 fn record_matches(written: &[u8; PAYLOAD_LEN], read: &[u8; PAYLOAD_LEN]) -> bool {
     written[5..15] == read[5..15] && written[88] == read[88]
-}
-
-fn find_interface_path(vid: u16, pid: u16, interface: u8) -> Result<String, String> {
-    find_paths(&interface_needle(vid, pid, interface)).map(|paths| paths[0].clone())
 }
 
 /// Device paths of the config model's consumer collection (`…&MI_01&Col03#…`)
@@ -1094,6 +1179,35 @@ mod tests {
     use super::*;
     use crate::device_catalog::NAGA_V2_HYPERSPEED;
 
+    /// A reply counts only when it echoes the request's class and command:
+    /// Razer's driver can read our report slot first and leave us its reply.
+    #[test]
+    fn a_reply_must_echo_the_class_and_command() {
+        let request = build_command(0x1f, CLASS_CONTROL, CMD_GET_MODE, &[0x00, 0x00]);
+        let mut reply = request;
+        reply[0] = COMMAND_STATUS_OK;
+        reply[8] = 0x03;
+        assert!(reply_matches(&request, &reply));
+        let foreign = build_command(0x1f, CLASS_BUTTON, CMD_GET_BUTTON, &GET_BUTTON_ARGS);
+        assert!(!reply_matches(&request, &foreign));
+    }
+
+    #[test]
+    fn no_response_is_told_apart_from_other_failures() {
+        assert!(is_no_response(&format!("{NO_RESPONSE}: command 0x00/0x84")));
+        assert!(!is_no_response("command 0x00/0x84 answered status 0x03"));
+    }
+
+    /// The first path that opens wins; stale leaves before it are skipped.
+    #[test]
+    fn open_first_skips_paths_that_do_not_open() {
+        let paths = ["stale".to_string(), "live".to_string(), "later".to_string()];
+        let opened = open_first(&paths, |path| if path == "stale" { Err(format!("{path}: gone")) } else { Ok(path.to_string()) });
+        assert_eq!(opened, Ok("live".to_string()));
+        assert_eq!(open_first(&paths[..1], |path| Err::<(), _>(format!("{path}: gone"))), Err("stale: gone".to_string()));
+        assert_eq!(open_first(&[], |_| Ok(())), Err(NO_INTERFACE.to_string()));
+    }
+
     #[test]
     fn probe_record_line_is_id_layer_and_hex_bytes() {
         let record = [0x01, 0x40, 0x00, 0x02, 0x02, 0x00, 0x68, 0x00, 0x00, 0x00];
@@ -1190,18 +1304,36 @@ mod tests {
         assert!(!record_matches(&written, &stale));
     }
 
-    /// Hardware only: writes Sidearm's consumer signals into the live mouse,
-    /// requires the drift check to call them in place and the `F13`..`F24`
-    /// signals "the other kind", and opens the consumer collection the helper
-    /// reads (shared, next to Razer's driver). Run with `cargo test -- --ignored`.
+    /// Raw records (layers 0 and 1) of `bindings`' buttons, for [`put_back`]:
+    /// the hardware tests write the mouse's memory and must leave it as found.
+    fn snapshot(device: &VendorDevice, bindings: &[OnboardBinding]) -> Vec<[u8; 10]> {
+        bindings
+            .iter()
+            .filter_map(|b| device.model().button_id_for(&b.control_id))
+            .flat_map(|id| [0, 1].map(|layer| device.raw_button_record(id, layer).expect("record readable")))
+            .collect()
+    }
+
+    /// Writes snapshot records back: the `SET` arguments have the `GET` reply's
+    /// layout (profile, button, layer, category, length, value…).
+    fn put_back(device: &VendorDevice, records: &[[u8; 10]]) {
+        for record in records {
+            device.command(CLASS_BUTTON, CMD_SET_BUTTON, record).expect("record written back");
+        }
+    }
+
+    /// Hardware only — **writes the mouse's memory**, then puts it back: writes
+    /// Sidearm's consumer signals into the live mouse, requires the drift check
+    /// to call them in place and the `F13`..`F24` signals "the other kind", and
+    /// opens the consumer collection the helper reads (shared, next to Razer's
+    /// driver). Any model with consumer signals. Run with `cargo test -- --ignored`.
     #[test]
     #[ignore]
     fn consumer_signals_round_trip_on_the_live_device() {
-        let device = VendorDevice::open_connected().expect("connect the Razer Naga V2 HyperSpeed");
-        let mut bindings: Vec<OnboardBinding> =
-            (0..12).map(|i| binding(&format!("thumb_{:02}", i + 1), &format!("F{}", 13 + i))).collect();
-        bindings.push(binding("top_aux_01", "Alt+F23"));
-        bindings.push(binding("top_aux_02", "Alt+F24"));
+        let device = VendorDevice::open_connected().expect("connect a catalog mouse");
+        assert!(device.model().consumer.is_some(), "{} has no consumer signals", device.model().name);
+        let bindings: Vec<OnboardBinding> = key_bindings(device.model());
+        let saved = snapshot(&device, &bindings);
         for b in &bindings {
             let (button_id, action) = target_in_mode(device.model(), b, true).unwrap();
             device.write_target(button_id, action).unwrap_or_else(|e| panic!("{}: {e}", b.control_id));
@@ -1211,10 +1343,41 @@ mod tests {
         for b in &bindings {
             assert_eq!(device.holds_other_signal(&bindings, &b.control_id), Ok(false), "{}", b.control_id);
         }
+        put_back(&device, &saved);
         let paths = consumer_collection_paths().expect("consumer collection in the registry");
         let opened = paths.iter().find(|path| std::fs::File::open(path).is_ok());
         println!("consumer collection: {opened:?} of {paths:?}");
         assert!(opened.is_some(), "no consumer collection opens: {paths:?}");
+    }
+
+    /// Every key button of `model` with Sidearm's own `F13`.. signal: thumbs
+    /// bare, the rest (top buttons) with Alt, as the config seeds them.
+    fn key_bindings(model: &NativeModel) -> Vec<OnboardBinding> {
+        let thumbs = model.key_buttons.iter().filter(|(id, _)| id.starts_with("thumb_")).count();
+        model
+            .key_buttons
+            .iter()
+            .enumerate()
+            .map(|(index, (control, _))| {
+                let key = if index < thumbs { format!("F{}", 13 + index) } else { format!("Alt+F{}", 23 + index - thumbs) };
+                binding(control, &key)
+            })
+            .collect()
+    }
+
+    /// Hardware only: a live DPI write changes the live value and leaves the
+    /// stored one (what the mouse keeps without Sidearm). Restores the live DPI.
+    #[test]
+    #[ignore]
+    fn live_dpi_write_leaves_the_stored_dpi() {
+        let device = VendorDevice::open_connected().expect("connect a catalog mouse");
+        let (live, stored) = (device.dpi().unwrap(), device.dpi_in(VARSTORE).unwrap());
+        println!("live DPI {live}, stored DPI {stored}");
+        let probe = if live + 100 <= device.model().dpi_max { live + 100 } else { live - 100 };
+        device.set_dpi(probe, false).unwrap();
+        let after = (device.dpi().unwrap(), device.dpi_in(VARSTORE).unwrap());
+        device.set_dpi(live, false).unwrap();
+        assert_eq!(after, (probe, stored), "live write of {probe}: (live, stored)");
     }
 
     /// Read-only: prints the "Help verify" report of the connected mouse.
@@ -1225,28 +1388,25 @@ mod tests {
         println!("{}", device.probe_report());
     }
 
-    /// Hardware only: opens the live vendor collection and writes the factory
-    /// `F13`..`F24` mapping the capture recorded, so every write must be echoed
-    /// by the mouse, and `verify` must then confirm all twelve bindings.
-    /// Run with `cargo test -- --ignored`.
+    /// Hardware only — **writes the mouse's memory**, then puts it back: writes
+    /// the `F13`..`F24` key signals through the slot path, so every write must
+    /// be echoed by the mouse, and `verify` must then confirm every binding.
+    /// Any catalog model (an unverified one refuses the writes until it is
+    /// marked verified locally). Run with `cargo test -- --ignored`.
     #[test]
     #[ignore]
     fn writes_the_captured_mapping_into_the_live_device() {
-        let device = VendorDevice::open_connected()
-            .expect("connect the Razer Naga V2 HyperSpeed to run this test");
-        let bindings: Vec<OnboardBinding> = (0..12)
-            .map(|index| OnboardBinding {
-                control_id: format!("thumb_{:02}", index + 1),
-                encoded_key: format!("F{}", 13 + index),
-            })
-            .collect();
-        device
-            .apply_bindings(&bindings)
-            .expect("the mouse must echo every button write");
-        let report = device
-            .verify(&bindings)
-            .expect("the mouse must confirm the bindings it stores");
-        assert!(report.failed.is_empty(), "no thumb binding may fail to confirm");
+        let device = VendorDevice::open_connected().expect("connect a catalog mouse");
+        let bindings = key_bindings(device.model());
+        let saved = snapshot(&device, &bindings);
+        set_consumer_signals(false);
+        let written = device.apply_bindings(&bindings);
+        let report = device.verify(&bindings);
+        set_consumer_signals(true);
+        put_back(&device, &saved);
+        written.expect("the mouse must echo every button write");
+        let report = report.expect("the mouse must confirm the bindings it stores");
+        assert!(report.failed.is_empty(), "no binding may fail to confirm: {:?}", report.failed);
         assert_eq!(report.confirmed.len(), bindings.len(), "every binding is confirmed");
     }
 

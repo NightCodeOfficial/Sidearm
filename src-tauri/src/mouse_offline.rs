@@ -22,6 +22,9 @@ use crate::mouse_memory::{
 
 /// Present in the config folder while the mouse holds the offline profile.
 pub const OFFLINE_MARKER_FILE: &str = "mouse-offline-written";
+/// Left by an exit that could not store the offline profile (the mouse slept):
+/// the next start tells the user why the buttons did nothing without Sidearm.
+pub const OFFLINE_FAILED_FILE: &str = "mouse-offline-failed";
 
 /// One record to store: button, layer (`0` standard, `1` Hypershift), action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,12 +128,17 @@ fn modifier_mask(ctrl: bool, shift: bool, alt: bool, win: bool) -> u8 {
 }
 
 /// Writes the offline profile into the mouse and leaves the marker. Best
-/// effort: a record the mouse refuses is logged and skipped.
+/// effort: a record the mouse refuses is logged and skipped. The marker is only
+/// left when the mouse took a record; a mouse that took none (asleep) leaves
+/// [`OFFLINE_FAILED_FILE`] instead.
 pub fn write_offline_profile(config: &AppConfig, profile_id: &str, config_dir: &Path) {
     let records = offline_records(config, profile_id);
+    let failed_marker = config_dir.join(OFFLINE_FAILED_FILE);
     let device = match VendorDevice::open_connected() {
         Ok(device) => device,
         Err(message) => {
+            // No mouse at all (or one that does not open) is not a sleeping
+            // mouse: nothing to tell the user next time.
             log::warn!("[mouse-offline] mouse not reachable, offline profile not written: {message}");
             return;
         }
@@ -148,7 +156,20 @@ pub fn write_offline_profile(config: &AppConfig, profile_id: &str, config_dir: &
                 .is_err()
         })
         .count();
+    // Profile switches set the DPI live only: store the offline profile's own
+    // DPI; a profile without one leaves the mouse's stored DPI alone.
+    if let Some(dpi) = config.profiles.iter().find(|p| p.id == profile_id).and_then(|p| p.mouse_dpi)
+        && let Err(message) = device.set_dpi(dpi, true)
+    {
+        log::warn!("[mouse-offline] DPI not stored: {message}");
+    }
+    if failed == records.len() && !records.is_empty() {
+        let _ = std::fs::write(&failed_marker, profile_id);
+        log::warn!("[mouse-offline] the mouse took none of {} records: offline profile not written", records.len());
+        return;
+    }
     let _ = std::fs::write(config_dir.join(OFFLINE_MARKER_FILE), profile_id);
+    let _ = std::fs::remove_file(&failed_marker);
     log::info!(
         "[mouse-offline] profile `{profile_id}` written for use without Sidearm: {} records, {failed} failed",
         records.len()

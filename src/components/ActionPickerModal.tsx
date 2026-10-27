@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AppConfig, ControlId, Layer } from "../lib/config";
 import { ACTION_CATEGORIES } from "../lib/constants";
-import { isBuiltinControl } from "../lib/onboard-mapping";
+import { isBuiltinControl, isKeyButton } from "../lib/onboard-mapping";
 import { liveTestAction, listenEncodedKeyEvent, normalizeCommandError } from "../lib/backend";
 import {
   expectedEncodedKeyForControl,
@@ -506,6 +506,9 @@ export function ActionPickerModal({
                     selectedLayer={selectedLayer}
                     physicalControls={config.physicalControls}
                     bindings={config.bindings}
+                    // shortcut: also shown in the F13..F24 rollback mode, where
+                    // both buttons do arrive together; pass the mode if it matters.
+                    sideButtonsOneAtATime={builtinControl && controlId !== undefined && isKeyButton(controlId)}
                   />
                   <label className="field">
                     <span className="field__label">

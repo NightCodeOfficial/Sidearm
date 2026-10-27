@@ -2,8 +2,8 @@
 //! descriptor per model. Everything that differs between models lives here;
 //! the wire format they share stays in `mouse_memory`.
 //!
-//! Only the Naga V2 HyperSpeed is listed: it is the one model proven on
-//! hardware. Plan for more models: `plans/multi-device/plan.md`.
+//! Only the Naga V2 HyperSpeed is verified on hardware; the others are read
+//! only. How a model is added and verified: `docs/ADDING-A-MODEL.md`.
 
 /// One natively supported mouse model.
 #[derive(Debug)]
@@ -80,9 +80,10 @@ impl NativeModel {
         self.poll_rates.iter().find(|(_, c)| *c == code).map(|(rate, _)| *rate)
     }
     /// What the Mouse workspace needs to know about the model: name, DPI
-    /// range, poll rates ascending, whether it is verified, and whether it is
-    /// the one plugged in now.
-    pub fn info(&self, connected: bool) -> NativeModelInfo {
+    /// range, poll rates ascending, whether it is verified, whether it is the
+    /// one plugged in now, and — for a model with consumer signals — whether
+    /// its key buttons send them (`consumer`) or `F13`..`F24`.
+    pub fn info(&self, connected: bool, consumer: bool) -> NativeModelInfo {
         let mut poll_rates: Vec<u16> = self.poll_rates.iter().map(|(hz, _)| *hz).collect();
         poll_rates.sort_unstable();
         NativeModelInfo {
@@ -92,6 +93,7 @@ impl NativeModel {
             poll_rates,
             verified: self.verified,
             connected,
+            consumer_signals: self.consumer.as_ref().map(|_| consumer),
         }
     }
 }
@@ -106,6 +108,8 @@ pub struct NativeModelInfo {
     pub poll_rates: Vec<u16>,
     pub verified: bool,
     pub connected: bool,
+    /// `None`: the model has no consumer path; else whether it is in use.
+    pub consumer_signals: Option<bool>,
 }
 
 /// Razer Naga V2 HyperSpeed, measured on hardware (2026-10-16/17).
@@ -173,7 +177,7 @@ pub const NAGA_V2_HYPERSPEED: NativeModel = NativeModel {
 // daemon `mouse.py` (DPI maximum); key-button ids from Synapse's button table
 // as published in BrandonDoster/fang `docs/devices.json` — used only once a
 // model is verified. Bluetooth PIDs are left out (no vendor collection).
-// Details and line references: plans/multi-device/plan.md §2 and §7.
+// How a model moves to `verified`: docs/ADDING-A-MODEL.md.
 
 /// The twelve side buttons `0x40..=0x4b`, shared by every 12-button Naga.
 const THUMBS: [(&str, u8); 12] = [
@@ -299,7 +303,7 @@ mod tests {
 
     #[test]
     fn info_lists_the_poll_rates_ascending() {
-        let info = NAGA_V2_HYPERSPEED.info(true);
+        let info = NAGA_V2_HYPERSPEED.info(true, true);
         assert_eq!(info.name, "Razer Naga V2 HyperSpeed");
         assert_eq!((info.dpi_min, info.dpi_max), (100, 30_000));
         assert_eq!(info.poll_rates, [125, 500, 1000]);

@@ -9,10 +9,11 @@ import {
   listenMouseBattery,
   normalizeCommandError,
   openDeviceReportIssue,
+  setKeySignals,
   setMouseDpi,
   setMousePollRate,
 } from "../lib/backend";
-import type { MouseSettings as MouseSettingsState, NativeModelInfo } from "../lib/onboard-mapping";
+import type { MouseSettings as MouseSettingsState, MouseStatusKind, NativeModelInfo } from "../lib/onboard-mapping";
 import { PillTrack } from "./PillTrack";
 import { Notice, SelectField, SettingRow, Toggle } from "./shared";
 
@@ -26,7 +27,15 @@ export interface MouseWorkspaceProps {
   runtimeProfileId: string | null;
   setSelectedProfileId: (id: string | null) => void;
   updateDraft: (updater: (config: AppConfig) => AppConfig) => void;
+  /** Active mouse-path states (`mouse_status`), shown as warnings on top. */
+  mouseStates: MouseStatusKind[];
 }
+
+const STATE_MESSAGE: Partial<Record<MouseStatusKind, string>> = {
+  helperLost: "mouse.statusHelperLost",
+  buttonsUnreadable: "mouse.statusButtonsUnreadable",
+  mouseUnreachable: "mouse.statusMouseUnreachable",
+};
 
 /** The "Mouse" workspace: a profile switcher on top, the selected profile's own
  *  DPI / poll rate (written into the mouse on every switch to that profile), and
@@ -38,6 +47,7 @@ export function MouseWorkspace({
   runtimeProfileId,
   setSelectedProfileId,
   updateDraft,
+  mouseStates,
 }: MouseWorkspaceProps) {
   const { t } = useTranslation();
   const [device, setDevice] = useState<MouseSettingsState | null>(null);
@@ -47,6 +57,9 @@ export function MouseWorkspace({
   const [dpiDraft, setDpiDraft] = useState("");
   const [reporting, setReporting] = useState(false);
   const [report, setReport] = useState<string | null>(null);
+  const [reportCopied, setReportCopied] = useState(false);
+  /** The signal kind being switched to, until the switch is done; then "done". */
+  const [signalsSwitch, setSignalsSwitch] = useState<boolean | "done" | null>(null);
 
   async function run(request: () => Promise<MouseSettingsState>) {
     setBusy(true);
@@ -101,12 +114,26 @@ export function MouseWorkspace({
       setReport(text);
       setError(null);
       // The textarea below keeps the report reachable if the copy is refused.
-      await navigator.clipboard.writeText(text).catch(() => undefined);
+      setReportCopied(await navigator.clipboard.writeText(text).then(() => true, () => false));
       await openDeviceReportIssue();
     } catch (unknownError) {
       setError(normalizeCommandError(unknownError).message);
     } finally {
       setReporting(false);
+    }
+  }
+
+  /** Switches what the key buttons send (a running capture restarts to follow). */
+  async function switchSignals(consumer: boolean) {
+    setSignalsSwitch(consumer);
+    try {
+      await setKeySignals(consumer);
+      setModel(await getNativeModel());
+      setError(null);
+      setSignalsSwitch("done");
+    } catch (unknownError) {
+      setError(normalizeCommandError(unknownError).message);
+      setSignalsSwitch(null);
     }
   }
 
@@ -119,6 +146,10 @@ export function MouseWorkspace({
 
   return (
     <div className="settings-shell__content">
+      {mouseStates.flatMap((kind) => {
+        const key = STATE_MESSAGE[kind];
+        return key ? [<Notice key={kind} variant="warning"><p>{t(key)}</p></Notice>] : [];
+      })}
       {model && !model.verified ? (
         <Notice variant="warning">
           <p>{t("mouse.unverifiedModel", { name: model.name })}</p>
@@ -131,10 +162,12 @@ export function MouseWorkspace({
             >
               {reporting ? t("mouse.reportReading") : t("mouse.reportButton")}
             </button>
-          ) : null}
+          ) : (
+            <p className="notice__hint">{t("mouse.reportConnect")}</p>
+          )}
           {report !== null ? (
             <>
-              <p className="notice__hint">{t("mouse.reportCopied")}</p>
+              <p className="notice__hint">{t(reportCopied ? "mouse.reportCopied" : "mouse.reportCopyFailed")}</p>
               <textarea className="input input--multiline mouse-report" readOnly rows={6} value={report} aria-label={t("mouse.reportButton")} />
             </>
           ) : null}
@@ -166,10 +199,13 @@ export function MouseWorkspace({
               <span className="settings-section__master-label">{t("mouse.profileOverride")}</span>
               <Toggle
                 checked={overrides}
+                // Seeded from the mouse's live values: without them it would
+                // save made-up defaults.
+                disabled={!overrides && device === null}
                 onChange={(checked) =>
                   saveProfile(
                     checked
-                      ? { mouseDpi: device?.dpi ?? 1600, mousePollRateHz: device?.pollRateHz ?? 1000 }
+                      ? { mouseDpi: device?.dpi, mousePollRateHz: device?.pollRateHz }
                       : { mouseDpi: undefined, mousePollRateHz: undefined },
                   )
                 }
@@ -227,6 +263,36 @@ export function MouseWorkspace({
               </SettingRow>
             </>
           ) : null}
+        </section>
+      ) : null}
+
+      {model?.consumerSignals != null ? (
+        <section className="settings-section">
+          <SettingRow
+            title={t("mouse.signalsHeader")}
+            hint={model.consumerSignals ? t("mouse.signalsConsumerHint") : t("mouse.signalsKeysHint")}
+          >
+            <div className="mouse-signals">
+              <PillTrack
+                items={[
+                  { key: "consumer", label: t("mouse.signalsConsumer") },
+                  { key: "keys", label: t("mouse.signalsKeys") },
+                ]}
+                // The choice shows at once; the switch takes a few seconds.
+                active={(typeof signalsSwitch === "boolean" ? signalsSwitch : model.consumerSignals) ? "consumer" : "keys"}
+                onSelect={(key) => {
+                  if (typeof signalsSwitch !== "boolean" && (key === "consumer") !== model.consumerSignals) {
+                    void switchSignals(key === "consumer");
+                  }
+                }}
+              />
+              {signalsSwitch !== null ? (
+                <p className="panel__muted help-sm" role="status">
+                  {signalsSwitch === "done" ? t("mouse.signalsDone") : t("mouse.signalsSwitching")}
+                </p>
+              ) : null}
+            </div>
+          </SettingRow>
         </section>
       ) : null}
 

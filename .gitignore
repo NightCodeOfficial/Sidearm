@@ -66,6 +66,7 @@ FIXES_*.md
 # Playwright / smoke-test artifacts
 output/
 Sidearm-Portable-v*.zip
+release-notes-v*.md
 
 # Serena MCP — per-machine cache + memories
 .serena/

@@ -1036,6 +1036,8 @@ select::checkmark {
 .notice code { font-family: var(--font-mono); }
 .notice .action-button { margin-top: 10px; }
 .notice .mouse-report { margin-top: 8px; font-family: var(--font-mono); }
+.mouse-signals { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.mouse-signals .help-sm { margin: 0; text-align: right; max-width: 360px; }
 
 .notice--subtle  { background: var(--c-card-bg); border-color: var(--c-card-border); }
 /* Blocking states read as distinct via a tinted fill + coloured border on all

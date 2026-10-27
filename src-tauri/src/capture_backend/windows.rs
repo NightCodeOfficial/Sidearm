@@ -266,6 +266,8 @@ struct HelperHandle {
     stdin_pipe: std::process::ChildStdin,
     child: std::process::Child,
     reader_thread: JoinHandle<()>,
+    /// Set by `stop()` before it closes the helper: that exit is no crash.
+    stopping: Arc<AtomicBool>,
 }
 
 impl HelperHandle {
@@ -1246,7 +1248,9 @@ impl CaptureBackendHandle {
                 stdin_pipe,
                 mut child,
                 reader_thread,
+                stopping,
             } = helper;
+            stopping.store(true, Ordering::SeqCst);
             drop(stdin_pipe);
 
             // Bounded wait: poll try_wait() up to 5 seconds, then force-kill
@@ -3115,7 +3119,9 @@ pub fn capture_helper_main() {
     let mut mouse_reinstall_count: u32 = 0;
     let mut last_mouse_pos = current_cursor_pos();
 
-    loop {
+    // Every exit below leaves the process: an inner `break` alone would keep a
+    // hookless helper alive until the parent kills it (5 s on every stop).
+    'pump: loop {
         // Compute wait timeout: if we have pending modifiers, wake up in
         // time to replay them (20ms buffer).  Otherwise use the normal
         // health check interval.
@@ -3353,7 +3359,7 @@ pub fn capture_helper_main() {
                 }
                 unsafe { unhook_mouse_hook(&mut mouse_hook); }
                 log::info!("[capture-helper] Hook uninstalled, exiting.");
-                break;
+                break 'pump;
             }
             if m.message == WM_REHOOK {
                 log::info!("[capture-helper] REHOOK: reinstalling WH_KEYBOARD_LL...");
@@ -3380,7 +3386,7 @@ pub fn capture_helper_main() {
                         "[capture-helper] Failed to reinstall hook on REHOOK: {}. Exiting.",
                         std::io::Error::last_os_error()
                     );
-                    break;
+                    break 'pump;
                 }
                 hook = new_hook;
                 mouse_hook = unsafe { install_mouse_hook(hmod) };
@@ -3404,7 +3410,7 @@ pub fn capture_helper_main() {
                     UnhookWindowsHookEx(hook);
                 }
                 unsafe { unhook_mouse_hook(&mut mouse_hook); }
-                break;
+                break 'pump;
             }
 
             unsafe {
@@ -3419,7 +3425,7 @@ pub fn capture_helper_main() {
                     UnhookWindowsHookEx(hook);
                 }
                 unsafe { unhook_mouse_hook(&mut mouse_hook); }
-                break;
+                break 'pump;
             }
         }
 
@@ -3689,6 +3695,12 @@ fn spawn_capture_helper(
         child.id(),
         helper_regs.len()
     );
+    crate::mouse_status::set_state(Some(&app), crate::mouse_status::StatusKind::HelperLost, false);
+    // A new reader reports again; one that is not started (F13..F24) never would.
+    crate::mouse_status::set_state(Some(&app), crate::mouse_status::StatusKind::ButtonsUnreadable, false);
+    let generation = HELPER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let stopping = Arc::new(AtomicBool::new(false));
+    let reader_stopping = stopping.clone();
 
     // Reader thread: reads encoded keys from helper stdout, converts to events
     let reader_thread = thread::spawn(move || {
@@ -3705,6 +3717,16 @@ fn spawn_capture_helper(
         for line in reader.lines().map_while(Result::ok) {
             let trimmed = line.trim();
             if trimmed.is_empty() {
+                continue;
+            }
+            // Whether the consumer reader can read the side buttons (Mouse tab).
+            if trimmed.starts_with("STATUS:") {
+                let unreadable = trimmed == super::consumer::STATUS_UNREADABLE;
+                crate::mouse_status::set_state(
+                    Some(&app),
+                    crate::mouse_status::StatusKind::ButtonsUnreadable,
+                    unreadable,
+                );
                 continue;
             }
             // Diagnostic lines from helper — routed to log::debug! so at the
@@ -3789,13 +3811,45 @@ fn spawn_capture_helper(
         // EOF — i.e. the helper process has exited/crashed. Flag it so the
         // worker releases holds whose key-ups will now never arrive.
         helper_died.store(true, Ordering::SeqCst);
+        if reader_stopping.load(Ordering::SeqCst) {
+            return; // `stop()` closed it
+        }
         // Silence used to be the only symptom: capture kept "running" while the
-        // helper was gone, so no button fired and nothing was logged. Record a
-        // warning for the UI so the user knows to restart capture.
-        log::warn!(
-            "[capture] Capture helper exited (stdout closed) — mouse buttons and \
-             modifier combos stop working until capture is restarted."
-        );
+        // helper was gone, so no button fired and nothing was logged.
+        log::warn!("[capture] Capture helper exited (stdout closed) — restarting capture.");
+        schedule_helper_restart(app, runtime_store, generation);
+    });
+
+    Some(HelperHandle {
+        stdin_pipe,
+        child,
+        reader_thread,
+        stopping,
+    })
+}
+
+/// Restart delays after successive helper deaths within [`HELPER_RESTART_WINDOW`];
+/// one more death gives up and tells the user.
+const HELPER_RESTART_DELAYS: [std::time::Duration; 3] =
+    [std::time::Duration::from_secs(1), std::time::Duration::from_secs(5), std::time::Duration::from_secs(30)];
+const HELPER_RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+static HELPER_RESTARTS: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());
+/// Helpers spawned so far: a restart is only for the helper that died, not for
+/// one a reload or a stop/start replaced meanwhile.
+static HELPER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Restarts capture after the helper died — every mouse button and modifier
+/// combo depends on it, and a tray app may run for days with nobody watching
+/// Diagnostics. Gives up after [`HELPER_RESTART_DELAYS`] within the window.
+fn schedule_helper_restart(app: AppHandle, runtime_store: Arc<Mutex<RuntimeStore>>, generation: u64) {
+    let attempt = {
+        let mut restarts = HELPER_RESTARTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        restarts.retain(|at| at.elapsed() < HELPER_RESTART_WINDOW);
+        restarts.push(std::time::Instant::now());
+        restarts.len() - 1
+    };
+    let give_up = |app: &AppHandle, runtime_store: &Arc<Mutex<RuntimeStore>>| {
+        log::warn!("[capture] Capture helper keeps exiting — gave up restarting it.");
         if let Ok(mut store) = runtime_store.lock() {
             store.record_warn(
                 "перехват",
@@ -3803,13 +3857,33 @@ fn spawn_capture_helper(
                  с модификаторами перестанут срабатывать — перезапустите перехват.",
             );
         }
+        crate::mouse_status::set_state(Some(app), crate::mouse_status::StatusKind::HelperLost, true);
+    };
+    let Some(delay) = HELPER_RESTART_DELAYS.get(attempt).copied() else {
+        give_up(&app, &runtime_store);
+        return;
+    };
+    let spawned = thread::Builder::new().name("helper-restart".into()).spawn(move || {
+        thread::sleep(delay);
+        let current = || HELPER_GENERATION.load(Ordering::SeqCst) == generation;
+        match crate::restart_capture(&app, current) {
+            Ok(false) => {} // replaced or stopped meanwhile
+            // A backend whose helper did not spawn starts fine but leaves the
+            // buttons dead with nothing left to notice a further death.
+            Ok(true) if current() => {
+                log::warn!("[capture] Capture restarted without its helper.");
+                give_up(&app, &runtime_store);
+            }
+            Ok(true) => log::info!("[capture] Capture restarted after the helper exited (attempt {}).", attempt + 1),
+            Err(message) => {
+                log::warn!("[capture] Capture restart failed: {message}");
+                give_up(&app, &runtime_store);
+            }
+        }
     });
-
-    Some(HelperHandle {
-        stdin_pipe,
-        child,
-        reader_thread,
-    })
+    if let Err(error) = spawned {
+        log::warn!("[capture] Capture restart thread not started: {error}");
+    }
 }
 
 // ---------------------------------------------------------------------------

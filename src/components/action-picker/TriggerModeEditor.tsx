@@ -12,6 +12,7 @@ export function TriggerModeEditor({
   selectedLayer,
   physicalControls,
   bindings,
+  sideButtonsOneAtATime = false,
 }: {
   triggerMode: TriggerMode;
   onChange: (mode: TriggerMode) => void;
@@ -21,6 +22,8 @@ export function TriggerModeEditor({
   selectedLayer?: Layer;
   physicalControls: PhysicalControl[];
   bindings: Binding[];
+  /** A built-in Naga key button: the mouse reports one of them at a time. */
+  sideButtonsOneAtATime?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -42,6 +45,9 @@ export function TriggerModeEditor({
           { value: "chord", label: t("picker.triggerChord") },
         ]}
       />
+      {sideButtonsOneAtATime && (triggerMode === "hold" || triggerMode === "chord") ? (
+        <p className="panel__muted help-sm">{t("picker.sideButtonsOneAtATime")}</p>
+      ) : null}
 
       {triggerMode === "chord" && controlId ? (
         <div className="field">

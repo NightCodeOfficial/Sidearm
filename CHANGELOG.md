@@ -16,6 +16,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewrites the mouse quietly. To go back to F13–F24, create an empty file
   `onboard-key-signals` next to the config and restart Sidearm.
 - "Help verify" reading the mouse takes about 20 s (was announced as 15 s).
+- A per-profile DPI is set live on a profile switch instead of being stored in
+  the mouse each time; the mouse keeps the offline profile's DPI on exit.
+- The takeover guard reads only the mouse's mode between full checks (every
+  5 minutes, at once while Razer Synapse runs or after anything unusual), and
+  waits a whole period instead of polling a sleeping mouse every 3 s.
+- The "Help verify" report adds the firmware and Windows versions and opens a
+  Device Report issue form.
+
+### Added
+- Mouse tab: a "Side button signals" switch — straight to Sidearm or F13–F24
+  keys — applied at once; replaces creating the `onboard-key-signals` file.
+- A one-time notice when the side buttons were switched to consumer signals,
+  with a "Back to F13–F24" action.
+- Mouse tab warnings when button capture stopped, the side buttons cannot be
+  read (receiver missing) or the mouse has not answered for a minute.
+- A notice on start when the mouse was asleep at the last exit and the
+  "without Sidearm" profile could not be stored.
+- The trigger-mode editor notes that the Naga reports its side buttons one at a
+  time (a second press ends a hold).
+- The Razer takeover toast names the buttons it restored; the "Razer Synapse is
+  running" toast opens Windows startup apps.
+- `release.ps1` (version check across all manifests, CHANGELOG notes, zip
+  without `data/`, SHA-256, optional publish) and a test that the version
+  matches in every manifest.
+- `docs/ADDING-A-MODEL.md`; CONTRIBUTING updated.
+
+### Fixed
+- Button capture restarts on its own (up to three times in 10 minutes) when its
+  helper process dies, instead of leaving every mouse button dead.
+- A held side button whose release never arrives (the mouse powered off
+  mid-press) is released after 10 minutes without a word from the mouse,
+  instead of repeating forever.
+- No more "Razer took the mouse over" toast from a single mode read caught
+  mid-transition.
+- A reply from the mouse is used only when it answers the request sent
+  (Razer's driver shares the same channel).
+- The mouse opens after its receiver moved to another USB port (stale registry
+  entries are skipped).
+- An exit with a sleeping mouse no longer marks the offline profile as stored.
+- Switching the side button signals never starts a stopped capture, and
+  switching them yourself shows no "switched" notice.
+- Stopping or reloading button capture no longer takes 5 seconds: the capture
+  helper now exits at once instead of lingering until it was killed.
+- "Report copied" is no longer shown when copying to the clipboard failed; the
+  profile's "own settings" toggle no longer saves made-up 1600 DPI / 1000 Hz
+  while the mouse is asleep.
+- Hardware tests run on any catalog model and put the mouse's button records
+  back afterwards.
+
+### Removed
+- The stale `docs/DEVICE-CATALOG.md` and an unused translation key.
 
 ## [0.10.0] — 2026-10-27
 
