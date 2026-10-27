@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-10-27
+
 ### Fixed
 - Shortcuts with Shift or Alt now work from the mouse's memory without
   Sidearm (Alt+F4, Shift+Alt, Win+Shift+S…). The mouse's firmware ignores the
