@@ -365,6 +365,7 @@ pub struct VendorDevice {
     /// reported a rewritten button that was not). One user at a time.
     _exclusive: MutexGuard<'static, ()>,
     model: &'static NativeModel,
+    pid: u16,
 }
 
 /// Serializes every [`VendorDevice`] in this process.
@@ -413,7 +414,7 @@ impl VendorDevice {
         if handle == INVALID_HANDLE_VALUE {
             return Err(format!("{}: CreateFileW({path})", Error::last_os_error()));
         }
-        Ok(Self { handle, _exclusive: exclusive, model })
+        Ok(Self { handle, _exclusive: exclusive, model, pid })
     }
 
     /// The model this device was opened as.
@@ -547,11 +548,7 @@ impl VendorDevice {
     /// The stored record of `button_id` on `layer` (`0` standard, `1` the
     /// firmware Hypershift layer).
     pub fn read_button_at(&self, button_id: u8, layer: u8) -> Result<ButtonRecord, String> {
-        let mut args = GET_BUTTON_ARGS;
-        args[1] = button_id;
-        args[2] = layer;
-        let reply = self.command(CLASS_BUTTON, CMD_GET_BUTTON, &args)?;
-        let record = &reply[8..18];
+        let record = self.raw_button_record(button_id, layer)?;
         Ok(ButtonRecord {
             category: record[3],
             modifier: record[5],
@@ -566,6 +563,56 @@ impl VendorDevice {
             dpi: self.dpi()?,
             poll_rate_hz: self.poll_rate_hz()?,
         })
+    }
+
+    /// Plain-text dump for a "help verify this model" issue: identity, mode,
+    /// settings, and the raw record of every button id the device answers for.
+    /// Only reads; a failed read becomes a line, not an error.
+    pub fn probe_report(&self) -> String {
+        let model = self.model;
+        let show = |read: Result<String, String>| read.unwrap_or_else(|error| format!("error: {error}"));
+        let mut lines = vec![
+            format!("Sidearm {} device report", env!("CARGO_PKG_VERSION")),
+            format!("Model: {} ({})", model.name, if model.verified { "verified" } else { "not verified" }),
+            format!("VID:PID {:04X}:{:04X}, interface MI_{:02X}", model.vid, self.pid, model.interface),
+            format!("Mode: {}", show(self.mode().map(|mode| format!("{mode:#04x}")))),
+            format!("DPI: {}", show(self.dpi().map(|dpi| dpi.to_string()))),
+            format!("Poll rate code: {}", show(
+                self.command(CLASS_CONTROL, CMD_GET_POLL_RATE, &[0x00]).map(|reply| format!("{:#04x}", reply[8])),
+            )),
+            format!("Battery: {}", show(self.battery_percent().map(|percent| format!("{percent}%")))),
+            String::new(),
+            "Button records (class 0x02 / command 0x8c): id layer: record bytes".to_string(),
+        ];
+        let mut silent = 0;
+        for button_id in 0..=u8::MAX {
+            // shortcut: layer 1 is read only for ids that answer on layer 0 (halves the
+            // ~50 ms-per-id scan); read it for every id if a model turns up a layer-1-only button.
+            match self.raw_button_record(button_id, 0) {
+                Ok(record) => {
+                    lines.push(record_line(button_id, 0, &record));
+                    lines.push(match self.raw_button_record(button_id, 1) {
+                        Ok(record) => record_line(button_id, 1, &record),
+                        Err(error) => format!("{button_id:#04x} L1: error: {error}"),
+                    });
+                }
+                Err(_) => silent += 1,
+            }
+        }
+        lines.push(format!("{silent} ids did not answer"));
+        lines.join("
+")
+    }
+
+    /// The 10 record bytes `GET_BUTTON` answers for `button_id` on `layer`.
+    fn raw_button_record(&self, button_id: u8, layer: u8) -> Result<[u8; 10], String> {
+        let mut args = GET_BUTTON_ARGS;
+        args[1] = button_id;
+        args[2] = layer;
+        let reply = self.command(CLASS_BUTTON, CMD_GET_BUTTON, &args)?;
+        let mut record = [0u8; 10];
+        record.copy_from_slice(&reply[8..18]);
+        Ok(record)
     }
 
     /// Battery charge in percent.
@@ -784,6 +831,12 @@ impl Drop for VendorDevice {
     }
 }
 
+/// One button line of [`VendorDevice::probe_report`]: `0x40 L0: 01 40 00 02 …`.
+fn record_line(button_id: u8, layer: u8, record: &[u8]) -> String {
+    let bytes: Vec<String> = record.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{button_id:#04x} L{layer}: {}", bytes.join(" "))
+}
+
 /// Payload of one command-class request: transaction byte, argument length,
 /// class, command, arguments, checksum. Every command in this module goes
 /// through here, so its golden tests pin the bytes on the wire.
@@ -919,6 +972,12 @@ fn find_leaf(parent: HKEY, class: String, needle: &str) -> Result<String, String
 mod tests {
     use super::*;
     use crate::device_catalog::NAGA_V2_HYPERSPEED;
+
+    #[test]
+    fn probe_record_line_is_id_layer_and_hex_bytes() {
+        let record = [0x01, 0x40, 0x00, 0x02, 0x02, 0x00, 0x68, 0x00, 0x00, 0x00];
+        assert_eq!(record_line(0x40, 1, &record), "0x40 L1: 01 40 00 02 02 00 68 00 00 00");
+    }
 
     /// Slot payloads captured from Synapse's own `GET_REPORT` replies, with the
     /// checksum byte it stored at offset 88.
@@ -1181,6 +1240,7 @@ mod tests {
             handle: INVALID_HANDLE_VALUE,
             _exclusive: DEVICE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
             model: &UNVERIFIED,
+            pid: 0,
         };
         let refused = |result: Result<(), String>| {
             assert_eq!(result, Err("Test mouse is not verified yet: button records are not written".into()));

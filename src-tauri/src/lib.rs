@@ -2795,6 +2795,29 @@ async fn get_native_model() -> Result<device_catalog::NativeModelInfo, CommandEr
     .map_err(|e| CommandError::internal(format!("native model task failed: {e}")))
 }
 
+/// Read-only dump of the connected mouse for a "help verify" issue
+/// (`VendorDevice::probe_report`). Scans every button id, so it takes ~15 s.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn get_device_report() -> Result<String, CommandError> {
+    tauri::async_runtime::spawn_blocking(|| {
+        mouse_memory::VendorDevice::open_connected()
+            .map(|device| device.probe_report())
+            .map_err(|msg| CommandError::new("onboard_device_unavailable", msg, None))
+    })
+    .await
+    .map_err(|e| CommandError::internal(format!("device report task failed: {e}")))?
+}
+
+/// Opens a new GitHub issue for a device report in the browser. The report
+/// itself goes through the clipboard: it is too long for a URL.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn open_device_report_issue() -> Result<(), CommandError> {
+    const URL: &str = "https://github.com/danscMax/Sidearm/issues/new?title=Device%20report%3A%20&body=Paste%20the%20report%20Sidearm%20copied%20to%20the%20clipboard%20below%20(Ctrl%2BV).%0A%0A";
+    crate::platform::shell::open_target(URL).map_err(CommandError::internal)
+}
+
 /// Battery, DPI and poll rate as the mouse reports them now.
 #[cfg(target_os = "windows")]
 #[tauri::command]
@@ -3635,6 +3658,8 @@ pub fn run() {
             verify_onboard_mapping,
             restore_onboard_control,
             get_native_model,
+            get_device_report,
+            open_device_report_issue,
             get_mouse_settings,
             set_mouse_dpi,
             set_mouse_poll_rate

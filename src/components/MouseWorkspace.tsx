@@ -3,10 +3,12 @@ import { useTranslation } from "react-i18next";
 import type { AppConfig, Profile } from "../lib/config";
 import { upsertProfile } from "../lib/config-editing";
 import {
+  getDeviceReport,
   getMouseSettings,
   getNativeModel,
   listenMouseBattery,
   normalizeCommandError,
+  openDeviceReportIssue,
   setMouseDpi,
   setMousePollRate,
 } from "../lib/backend";
@@ -43,6 +45,8 @@ export function MouseWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dpiDraft, setDpiDraft] = useState("");
+  const [reporting, setReporting] = useState(false);
+  const [report, setReport] = useState<string | null>(null);
 
   async function run(request: () => Promise<MouseSettingsState>) {
     setBusy(true);
@@ -89,6 +93,23 @@ export function MouseWorkspace({
     if (appliesNow) void run(request);
   }
 
+  /** Reads the mouse (no writes), copies the dump and opens a new issue for it. */
+  async function sendDeviceReport() {
+    setReporting(true);
+    try {
+      const text = await getDeviceReport();
+      setReport(text);
+      setError(null);
+      // The textarea below keeps the report reachable if the copy is refused.
+      await navigator.clipboard.writeText(text).catch(() => undefined);
+      await openDeviceReportIssue();
+    } catch (unknownError) {
+      setError(normalizeCommandError(unknownError).message);
+    } finally {
+      setReporting(false);
+    }
+  }
+
   const dpiValue = Number(dpiDraft);
   const dpiValid =
     model !== null &&
@@ -101,6 +122,22 @@ export function MouseWorkspace({
       {model && !model.verified ? (
         <Notice variant="warning">
           <p>{t("mouse.unverifiedModel", { name: model.name })}</p>
+          {model.connected ? (
+            <button
+              type="button"
+              className="action-button action-button--secondary action-button--small mt-8"
+              disabled={reporting}
+              onClick={() => void sendDeviceReport()}
+            >
+              {reporting ? t("mouse.reportReading") : t("mouse.reportButton")}
+            </button>
+          ) : null}
+          {report !== null ? (
+            <>
+              <p className="notice__hint">{t("mouse.reportCopied")}</p>
+              <textarea className="input input--multiline mouse-report" readOnly rows={6} value={report} aria-label={t("mouse.reportButton")} />
+            </>
+          ) : null}
         </Notice>
       ) : null}
       <section className="settings-section">

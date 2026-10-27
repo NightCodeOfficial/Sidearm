@@ -106,6 +106,16 @@ export async function getNativeModel(): Promise<NativeModelInfo> {
   return invoke<NativeModelInfo>("get_native_model");
 }
 
+/** Read-only text dump of the connected mouse for a "help verify" issue (~15 s). */
+export async function getDeviceReport(): Promise<string> {
+  return invoke<string>("get_device_report");
+}
+
+/** Opens a new GitHub issue for a device report in the browser. */
+export async function openDeviceReportIssue(): Promise<void> {
+  return invoke<void>("open_device_report_issue");
+}
+
 /** Battery, DPI and poll rate as the mouse reports them now. */
 export async function getMouseSettings(): Promise<MouseSettings> {
   return invoke<MouseSettings>("get_mouse_settings");
