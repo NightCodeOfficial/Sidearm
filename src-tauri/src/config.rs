@@ -293,6 +293,9 @@ pub struct Profile {
     /// Poll rate (125/500/1000 Hz) applied with the profile; absent = unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mouse_poll_rate_hz: Option<u16>,
+    /// Optional profile-specific DPI stages; mouse_dpi is the starting stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse_dpi_stages: Option<Vec<u16>>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -784,6 +787,8 @@ pub enum MouseActionKind {
     ScrollRight,
     MouseBack,
     MouseForward,
+    DpiUp,
+    DpiDown,
 }
 
 impl MouseActionKind {
@@ -792,7 +797,7 @@ impl MouseActionKind {
     /// The always-on `match` below forces a new variant to be added here and to the
     /// schema. Mirrors `ActionType::ALL`.
     #[cfg(test)]
-    const ALL: [MouseActionKind; 10] = [
+    const ALL: [MouseActionKind; 12] = [
         MouseActionKind::LeftClick,
         MouseActionKind::RightClick,
         MouseActionKind::MiddleClick,
@@ -803,6 +808,8 @@ impl MouseActionKind {
         MouseActionKind::ScrollRight,
         MouseActionKind::MouseBack,
         MouseActionKind::MouseForward,
+        MouseActionKind::DpiUp,
+        MouseActionKind::DpiDown,
     ];
 }
 
@@ -819,7 +826,9 @@ const _: fn(MouseActionKind) = |k| match k {
     | MouseActionKind::ScrollLeft
     | MouseActionKind::ScrollRight
     | MouseActionKind::MouseBack
-    | MouseActionKind::MouseForward => {}
+    | MouseActionKind::MouseForward
+    | MouseActionKind::DpiUp
+    | MouseActionKind::DpiDown => {}
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -3147,7 +3156,7 @@ fn profile(id: &str, name: &str, priority: i32, description: Option<&str>) -> Pr
         description: description.map(str::to_owned),
         enabled: true,
         priority,
-        mouse_dpi: None, mouse_poll_rate_hz: None,
+        mouse_dpi: None, mouse_poll_rate_hz: None, mouse_dpi_stages: None,
     }
 }
 
@@ -3904,7 +3913,7 @@ mod edge_proptests {
             description: None,
             enabled: true,
             priority: 0,
-            mouse_dpi: None, mouse_poll_rate_hz: None,
+            mouse_dpi: None, mouse_poll_rate_hz: None, mouse_dpi_stages: None,
         }];
         cfg.settings.fallback_profile_id = "p1".into();
         cfg.app_mappings = vec![];
@@ -4062,7 +4071,7 @@ mod edge_proptests {
             description: Some("desc".into()),
             enabled: false,
             priority: i32::MAX,
-            mouse_dpi: None, mouse_poll_rate_hz: None,
+            mouse_dpi: None, mouse_poll_rate_hz: None, mouse_dpi_stages: None,
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: Profile = serde_json::from_str(&json).unwrap();
@@ -4176,7 +4185,7 @@ mod edge_proptests {
                 description: None,
                 enabled: true,
                 priority,
-                mouse_dpi: None, mouse_poll_rate_hz: None,
+                mouse_dpi: None, mouse_poll_rate_hz: None, mouse_dpi_stages: None,
             };
             let json = serde_json::to_string(&p).unwrap();
             let back: Profile = serde_json::from_str(&json).unwrap();
@@ -4307,7 +4316,7 @@ mod edge_proptests {
                     description: None,
                     enabled: true,
                     priority: i as i32,
-                    mouse_dpi: None, mouse_poll_rate_hz: None,
+                    mouse_dpi: None, mouse_poll_rate_hz: None, mouse_dpi_stages: None,
                 })
                 .collect();
             cfg.settings.fallback_profile_id = "p0".into();
