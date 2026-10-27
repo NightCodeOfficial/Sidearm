@@ -1037,7 +1037,7 @@
     "redone": "Change redone",
     "saveFailedRollback": "Change reverted: {{reason}}",
     "backupFailed": "Couldn't write a config backup — check the config folder's disk space and permissions. Your settings still saved.",
-    "onboardWriteFailed": "Couldn't update the mouse's own button mapping: {{reason}} — the mouse may be offline. Your settings still saved.",
+    "onboardWriteFailed": "The mouse did not take the new button signals ({{reason}}) — it may be asleep. Your settings are saved; Sidearm will retry on its own.",
     "undoAction": "Redo",
     "openConfig": "Open folder"
   },
