@@ -7,14 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-27
+
+The side buttons stop sending F13–F24: Sidearm reads them straight from the
+mouse. Plus a self-healing capture, a live signal switch and clearer mouse status.
+
 ### Changed
 - The Naga V2 HyperSpeed's 12 side buttons and 2 top buttons no longer send
   F13–F24 keystrokes. Each holds a reserved consumer-page code that Windows
   ignores, and Sidearm reads the press straight from the mouse — no stray
   F-keys reach games or other programs, even when Sidearm is not running.
   Held buttons still auto-repeat at the Windows keyboard rate. The first start
-  rewrites the mouse quietly. To go back to F13–F24, create an empty file
-  `onboard-key-signals` next to the config and restart Sidearm.
+  rewrites the mouse and says so; to go back to F13–F24 (e.g. for AutoHotkey),
+  use the "Side button signals" switch in the Mouse tab.
 - "Help verify" reading the mouse takes about 20 s (was announced as 15 s).
 - A per-profile DPI is set live on a profile switch instead of being stored in
   the mouse each time; the mouse keeps the offline profile's DPI on exit.
