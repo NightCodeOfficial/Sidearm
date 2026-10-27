@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The Naga V2 HyperSpeed's 12 side buttons and 2 top buttons no longer send
+  F13–F24 keystrokes. Each holds a reserved consumer-page code that Windows
+  ignores, and Sidearm reads the press straight from the mouse — no stray
+  F-keys reach games or other programs, even when Sidearm is not running.
+  Held buttons still auto-repeat at the Windows keyboard rate. The first start
+  rewrites the mouse quietly. To go back to F13–F24, create an empty file
+  `onboard-key-signals` next to the config and restart Sidearm.
+- "Help verify" reading the mouse takes about 20 s (was announced as 15 s).
+
 ## [0.10.0] — 2026-10-27
 
 First step beyond one mouse: a device catalog, with three more Razer Nagas

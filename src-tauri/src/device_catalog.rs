@@ -30,13 +30,36 @@ pub struct NativeModel {
     pub dpi_max: u16,
     /// Poll rate (Hz) ↔ wire code of the control-class poll command.
     pub poll_rates: &'static [(u16, u8)],
+    /// Where the key buttons send consumer-page signals instead of `F13`..`F24`.
+    /// `None` keeps the keyboard signals.
+    pub consumer: Option<ConsumerSignals>,
     /// Proven on hardware. An unverified model is only read and gets DPI /
     /// poll-rate writes (each confirmed by read-back); button records, the
     /// offline profile and guard restores are refused for it.
     pub verified: bool,
 }
 
+/// A model's consumer-page signal path: each key button holds a record of
+/// category `0x0a` with a **reserved** consumer usage, which Windows ignores,
+/// and Sidearm reads the press straight from the HID collection.
+#[derive(Debug)]
+pub struct ConsumerSignals {
+    /// USB interface and top-level collection that carry the reports
+    /// (`MI_01&Col03`, usage page `0x000c`, on the V2 HyperSpeed).
+    pub interface: u8,
+    pub collection: u8,
+    /// First byte of every report read from that collection.
+    pub report_id: u8,
+    /// `(control id, consumer usage)` for every key button.
+    pub usages: &'static [(&'static str, u16)],
+}
+
 impl NativeModel {
+    /// Consumer usage a key button sends on this model, if it has the path.
+    pub fn consumer_usage_for(&self, control_id: &str) -> Option<u16> {
+        self.consumer.as_ref()?.usages.iter().find(|(id, _)| *id == control_id).map(|(_, usage)| *usage)
+    }
+
     /// Vendor button id of a control whose onboard record emits a key.
     pub fn button_id_for(&self, control_id: &str) -> Option<u8> {
         self.key_buttons.iter().find(|(id, _)| *id == control_id).map(|(_, button)| *button)
@@ -127,6 +150,20 @@ pub const NAGA_V2_HYPERSPEED: NativeModel = NativeModel {
     // Measured: `0x02` read back as the 500 Hz the mouse ran at, a `0x01`
     // write read back as 1000 Hz.
     poll_rates: &[(1000, 0x01), (500, 0x02), (125, 0x08)],
+    // Measured 2026-10-26 (plans/onboard-memory/2026-10-16-findings.md): every one
+    // of these reserved usages arrived as `02 <usage LE16>` on `MI_01&Col03`,
+    // which opens shared next to Razer's driver, and produced no Windows input.
+    consumer: Some(ConsumerSignals {
+        interface: 1,
+        collection: 3,
+        report_id: 0x02,
+        usages: &[
+            ("thumb_01", 0x10), ("thumb_02", 0x11), ("thumb_03", 0x12), ("thumb_04", 0x18),
+            ("thumb_05", 0x1c), ("thumb_06", 0x38), ("thumb_07", 0x3c), ("thumb_08", 0x4a),
+            ("thumb_09", 0x50), ("thumb_10", 0x58), ("thumb_11", 0x5e), ("thumb_12", 0xf8),
+            ("top_aux_01", 0xfc), ("top_aux_02", 0xfe),
+        ],
+    }),
     verified: true,
 };
 
@@ -172,6 +209,7 @@ pub const NAGA_V2_PRO: NativeModel = NativeModel {
     dpi_min: 100,
     dpi_max: 30_000,
     poll_rates: &[(1000, 0x01), (500, 0x02), (125, 0x08)],
+    consumer: None,
     verified: false,
 };
 
@@ -201,6 +239,7 @@ pub const NAGA_PRO: NativeModel = NativeModel {
     dpi_min: 100,
     dpi_max: 20_000,
     poll_rates: &[(1000, 0x01), (500, 0x02), (125, 0x08)],
+    consumer: None,
     verified: false,
 };
 
@@ -223,6 +262,7 @@ pub const NAGA_X: NativeModel = NativeModel {
     dpi_min: 100,
     dpi_max: 18_000,
     poll_rates: &[(1000, 0x01), (500, 0x02), (125, 0x08)],
+    consumer: None,
     verified: false,
 };
 
@@ -274,6 +314,29 @@ mod tests {
         assert_eq!(verified, ["Razer Naga V2 HyperSpeed"]);
         let names: Vec<&str> = CATALOG.iter().map(|m| m.name).collect();
         assert_eq!(names, ["Razer Naga V2 HyperSpeed", "Razer Naga V2 Pro", "Razer Naga Pro", "Razer Naga X"]);
+    }
+
+    /// The consumer path covers exactly the key buttons, with distinct usages,
+    /// and only on a model whose records Sidearm may write.
+    #[test]
+    fn consumer_usages_cover_every_key_button_once() {
+        for m in CATALOG {
+            let Some(consumer) = &m.consumer else { continue };
+            assert!(m.verified, "{}: consumer signals need a verified model", m.name);
+            let mut controls: Vec<&str> = consumer.usages.iter().map(|(id, _)| *id).collect();
+            let mut keys: Vec<&str> = m.key_buttons.iter().map(|(id, _)| *id).collect();
+            controls.sort_unstable();
+            keys.sort_unstable();
+            assert_eq!(controls, keys, "{}", m.name);
+            let mut usages: Vec<u16> = consumer.usages.iter().map(|(_, u)| *u).collect();
+            usages.sort_unstable();
+            usages.dedup();
+            assert_eq!(usages.len(), consumer.usages.len(), "{}: a usage is used twice", m.name);
+            assert!(!usages.contains(&0), "{}: usage 0 is the release report", m.name);
+        }
+        assert_eq!(NAGA_V2_HYPERSPEED.consumer_usage_for("thumb_01"), Some(0x10));
+        assert_eq!(NAGA_V2_HYPERSPEED.consumer_usage_for("top_aux_02"), Some(0xfe));
+        assert_eq!(NAGA_V2_HYPERSPEED.consumer_usage_for("mouse_left"), None);
     }
 
     #[test]

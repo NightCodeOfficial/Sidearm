@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::config::{ActionPayload, AppConfig, Layer, MouseActionKind};
 use crate::mouse_memory::{
-    OnboardAction, VendorDevice, button_id_for_control, hid_usage_for_vk, native_buttons,
+    OnboardAction, VendorDevice, hid_usage_for_vk, native_buttons, signal_action,
     onboard_bindings,
 };
 
@@ -42,22 +42,15 @@ pub fn offline_records(config: &AppConfig, profile_id: &str) -> Vec<OfflineRecor
         let action = config.actions.iter().find(|a| a.id == binding.action_id)?;
         Some(onboard_action(&action.payload))
     };
-    // Sidearm's own signal of a key control, the fallback for a layer-1 record
-    // nothing else fills (so no leftover vendor macro plays on Hypershift).
-    let signals: Vec<(String, OnboardAction)> = onboard_bindings(config)
+    // (control, button id, what the button does when nothing else applies):
+    // Sidearm's own inert signal of a key control, so no leftover vendor macro
+    // plays on a layer nothing else fills.
+    let mut controls: Vec<(String, u8, Option<OnboardAction>)> = onboard_bindings(config)
         .into_iter()
         .filter_map(|binding| {
-            let spec = crate::hotkeys::parse_hotkey(&binding.encoded_key).ok()?;
-            let usage = hid_usage_for_vk(spec.key.code)?;
-            let modifier = modifier_mask(spec.modifiers.ctrl, spec.modifiers.shift, spec.modifiers.alt, spec.modifiers.win);
-            Some((binding.control_id, OnboardAction::Key { modifier, usage }))
+            let (button_id, signal) = signal_action(&binding)?;
+            Some((binding.control_id, button_id, Some(signal)))
         })
-        .collect();
-
-    // (control, button id, what the button does when nothing else applies)
-    let mut controls: Vec<(String, u8, Option<OnboardAction>)> = signals
-        .iter()
-        .filter_map(|(control, signal)| Some((control.clone(), button_id_for_control(control)?, Some(*signal))))
         .collect();
     for (control, button_id, value) in native_buttons() {
         if matches!(*control, "mouse_4" | "mouse_5") {

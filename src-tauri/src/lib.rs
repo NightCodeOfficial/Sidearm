@@ -2796,7 +2796,7 @@ async fn get_native_model() -> Result<device_catalog::NativeModelInfo, CommandEr
 }
 
 /// Read-only dump of the connected mouse for a "help verify" issue
-/// (`VendorDevice::probe_report`). Scans every button id, so it takes ~15 s.
+/// (`VendorDevice::probe_report`). Scans every button id, so it takes ~20 s.
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn get_device_report() -> Result<String, CommandError> {
@@ -3282,6 +3282,12 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             match resolve_config_dir(app.handle()) {
                 Ok(config_dir) => {
+                    // Before the guard and the capture runtime read it.
+                    let key_signals = config_dir.join(mouse_memory::KEY_SIGNALS_FILE).exists();
+                    mouse_memory::set_consumer_signals(!key_signals);
+                    if key_signals {
+                        log::info!("[onboard] `{}` present: key buttons send F13..F24", mouse_memory::KEY_SIGNALS_FILE);
+                    }
                     onboard_guard::spawn(
                         app.handle().clone(),
                         runtime_store_for_guard.clone(),

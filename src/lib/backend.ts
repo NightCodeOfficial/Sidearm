@@ -106,7 +106,7 @@ export async function getNativeModel(): Promise<NativeModelInfo> {
   return invoke<NativeModelInfo>("get_native_model");
 }
 
-/** Read-only text dump of the connected mouse for a "help verify" issue (~15 s). */
+/** Read-only text dump of the connected mouse for a "help verify" issue (~20 s). */
 export async function getDeviceReport(): Promise<string> {
   return invoke<string>("get_device_report");
 }

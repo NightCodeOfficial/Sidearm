@@ -44,6 +44,8 @@ fn should_notify_elevated(last: &mut Option<String>, exe: &str) -> bool {
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
+mod consumer;
+#[cfg(target_os = "windows")]
 use windows::CaptureBackendHandle;
 
 #[cfg(target_os = "windows")]

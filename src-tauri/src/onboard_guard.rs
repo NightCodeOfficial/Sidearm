@@ -335,6 +335,16 @@ fn check_once(
                     Verdict::Clean(bindings.len() + crate::mouse_memory::native_buttons().len())
                 };
             }
+            // A button still holding Sidearm's signal of the other kind (the
+            // F13..F24 of an older version, or the rollback switch flipped) is a
+            // signal switch, not a takeover: rewritten below, not reported.
+            // Read before the rewrite, which erases the evidence. Read twice like
+            // the drift check, and an unreadable record counts as a switch: a
+            // transient misread must not report Razer taking the mouse over.
+            let switched = |control: &String| {
+                (0..2).any(|_| device.holds_other_signal(&bindings, control).unwrap_or(true))
+            };
+            let foreign_keys: Vec<String> = drifted_keys.iter().filter(|c| !switched(c)).cloned().collect();
             let mut restored = true;
             if !drifted_keys.is_empty() {
                 restored &= device.apply_bindings(&bindings).is_ok();
@@ -342,7 +352,12 @@ fn check_once(
             if !drifted_native.is_empty() {
                 restored &= device.restore_native_buttons(&drifted_native).is_ok();
             }
-            let controls = drifted_keys
+            if restored && foreign_keys.is_empty() && drifted_native.is_empty() {
+                log::info!("[onboard-guard] button signals switched to the configured kind: {drifted_keys:?}");
+                return Verdict::TookBack;
+            }
+            let reported = if restored { foreign_keys } else { drifted_keys };
+            let controls = reported
                 .into_iter()
                 .chain(drifted_native.iter().map(|id| id.to_string()))
                 .collect();

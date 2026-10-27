@@ -7,6 +7,7 @@ The low-level input hooks and the Razer-encoding detector: turns raw key events 
 ## Ownership
 
 - `windows.rs` — `WH_KEYBOARD_LL` hook, `WH_MOUSE_LL` hook (software Hypershift) plus its `hyper-inject` right-click thread and liveness check, encoding-chord detection, modifier buffering, hook-health probe, the capture worker + bounded event channel, foreground watcher.
+- `consumer.rs` — the consumer-signal reader (helper process): opens the config model's consumer collection (`mouse_memory::consumer_collection_path`, shared access next to Razer's driver), overlapped `ReadFile`, reopens every 2 s after the dongle sleeps or is unplugged (releasing every held button first), and translates reports into the keyboard hook's own lines. Pure parts (`held_usages`, `Translator`, `repeat_timing`) are unit-tested.
 - `mod.rs` — `process_encoded_key_event`: profile resolution, action lookup, dispatch, hold/release handling.
 - `linux.rs` — Linux capture (not the primary target).
 
@@ -27,6 +28,8 @@ The low-level input hooks and the Razer-encoding detector: turns raw key events 
 - The event channel is bounded and drops on full by design (a stalled consumer must not block the producer). Prefer draining releases promptly so holds don't stick.
 - Razer encoding window (~10ms) vs modifier replay buffer (~20ms) are tuned constants — change only with real hardware measurements.
 - An elevated foreground window (UIPI blocks our input) emits `elevated_foreground_blocked` `{exe}` once per app (`should_notify_elevated`), and only while Sidearm itself is not elevated.
+
+- **Consumer signals** (default on the V2 HyperSpeed): the parent passes `mouse_memory::consumer_signals(config)` — `(usage, encoded key)` for every key button's standard-layer mapping — in the helper init (`consumerSignals`); a non-empty list starts the reader. A press emits that encoded key exactly as the keyboard hook would (`F13`, stamped `HS:` from `HELPER_HYPER_ACTIVE` at read time), a release `UP:`, and a held button gets `REPEAT:` on Windows' own keyboard delay/rate (`SPI_GETKEYBOARDDELAY`/`SPEED`) because the device does not repeat. Report = id `0x02` + little-endian `u16` usages up to the first zero (`02 00 00` = all released). The helper's stdout is locked **per drain**, never for its whole life, because the reader thread writes to the same pipe. The `F13`..`F24` registrations stay: they serve the rollback switch and a mouse still holding old records until the guard rewrites them. Known limits (unmeasured on hardware): the `HS:` stamp reads the mouse hook's state from another thread, so a thumb pressed within a few ms of the trigger may resolve on the standard layer; and a hold ends only on a release report or a read error — if the dongle stays present while the mouse powers off mid-press and sends no `02 00 00`, the button stays held (and repeating) until the next report.
 
 ## Work Guidance
 

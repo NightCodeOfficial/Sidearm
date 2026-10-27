@@ -36,6 +36,7 @@
 use std::io::Error;
 
 use crate::device_catalog::NativeModel;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use windows_sys::Win32::Foundation::HANDLE;
@@ -90,6 +91,9 @@ const CMD_SET_BUTTON: u8 = 0x0c;
 /// Category byte of a button record that acts as a plain mouse button; its
 /// value is the button number (`1` left, `2` right, `3` middle).
 const CATEGORY_MOUSE: u8 = 0x01;
+/// Category of a consumer-page record: the button sends `report_id, usage LE16`
+/// on the model's consumer collection (`device_catalog::ConsumerSignals`).
+const CATEGORY_CONSUMER: u8 = 0x0a;
 /// Category of the firmware Hypershift key (seen on the right button after
 /// Synapse stored its profile).
 const CATEGORY_HYPERSHIFT: u8 = 0x0c;
@@ -177,19 +181,72 @@ pub fn usage_for_key(display_name: &str) -> Option<u8> {
     }
 }
 
-/// Onboard target of one binding: the button id, the HID modifier mask and the
-/// HID usage it should emit. Only `F13`..`F24` (with any modifiers) are
-/// accepted — keys no application uses, so the mouse can never fire a real
-/// shortcut on its own. Shared by the write path and the drift check so both
-/// agree on what "this binding is in place" means.
-fn binding_target(model: &NativeModel, binding: &OnboardBinding) -> Result<(u8, u8, u8), String> {
+/// Whether key buttons send consumer-page signals (default) or `F13`..`F24`.
+/// Set once at startup: a file [`KEY_SIGNALS_FILE`] next to the config selects
+/// the keyboard signals (rollback switch, plans/consumer-path/plan.md D2).
+static CONSUMER_SIGNALS: AtomicBool = AtomicBool::new(true);
+
+/// Present in the config folder when the key buttons must send `F13`..`F24`.
+pub const KEY_SIGNALS_FILE: &str = "onboard-key-signals";
+
+pub fn set_consumer_signals(enabled: bool) {
+    CONSUMER_SIGNALS.store(enabled, Ordering::Relaxed);
+}
+
+/// Onboard target of one binding: the button id and the record it should
+/// hold. In consumer mode that is the model's reserved consumer usage for the
+/// control; otherwise the binding's own key, of which only `F13`..`F24` (with
+/// any modifiers) are accepted — keys no application uses, so the mouse can
+/// never fire a real shortcut on its own. Shared by the write path and the
+/// drift check so both agree on what "this binding is in place" means.
+fn binding_target(model: &NativeModel, binding: &OnboardBinding) -> Result<(u8, OnboardAction), String> {
+    target_in_mode(model, binding, CONSUMER_SIGNALS.load(Ordering::Relaxed))
+}
+
+fn target_in_mode(model: &NativeModel, binding: &OnboardBinding, consumer: bool) -> Result<(u8, OnboardAction), String> {
     let button_id = model
         .button_id_for(&binding.control_id)
         .ok_or_else(|| format!("{} has no onboard key record", binding.control_id))?;
+    if consumer && let Some(usage) = model.consumer_usage_for(&binding.control_id) {
+        return Ok((button_id, OnboardAction::Consumer(usage)));
+    }
     let spec = crate::hotkeys::parse_hotkey(&binding.encoded_key)?;
     let usage = usage_for_key(&spec.key.display_name)
         .ok_or_else(|| format!("{} cannot live in onboard memory", spec.key.display_name))?;
-    Ok((button_id, modifier_mask(&spec.modifiers), usage))
+    Ok((button_id, OnboardAction::Key { modifier: modifier_mask(&spec.modifiers), usage }))
+}
+
+/// The record Sidearm's own signal for `binding` takes on the config's model
+/// (`None` when it has none), for the offline profile's inert fallback.
+pub fn signal_action(binding: &OnboardBinding) -> Option<(u8, OnboardAction)> {
+    binding_target(config_model(), binding).ok()
+}
+
+/// One key button the capture helper reads from the consumer collection: its
+/// usage and the encoded key the press stands for (the control's standard-layer
+/// encoder mapping, so the resolver sees the same signal as from the keyboard).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsumerSignal {
+    pub usage: u16,
+    pub encoded_key: String,
+}
+
+/// The consumer signals the helper must translate; empty in key mode or for a
+/// model without the consumer path.
+pub fn consumer_signals(config: &crate::config::AppConfig) -> Vec<ConsumerSignal> {
+    if !CONSUMER_SIGNALS.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    let model = config_model();
+    onboard_bindings(config)
+        .into_iter()
+        .filter_map(|binding| {
+            let usage = model.consumer_usage_for(&binding.control_id)?;
+            let encoded_key = crate::hotkeys::parse_hotkey(&binding.encoded_key).ok()?.canonical;
+            Some(ConsumerSignal { usage, encoded_key })
+        })
+        .collect()
 }
 
 /// Key bindings (thumbs and top buttons) the mouse should hold on its own, mirroring the frontend's
@@ -271,6 +328,8 @@ pub enum OnboardAction {
     Mouse(u8),
     /// The firmware Hypershift key: while held, the buttons play their layer-1 records.
     Hypershift,
+    /// A consumer-page usage; Sidearm's reserved ones produce no Windows input.
+    Consumer(u16),
 }
 
 impl OnboardAction {
@@ -280,6 +339,10 @@ impl OnboardAction {
             Self::Key { modifier, usage } => vec![CATEGORY_KEY, 0x02, modifier, usage],
             Self::Mouse(value) => vec![CATEGORY_MOUSE, 0x01, value],
             Self::Hypershift => vec![CATEGORY_HYPERSHIFT, 0x01, 0x01],
+            Self::Consumer(usage) => {
+                let [hi, lo] = usage.to_be_bytes();
+                vec![CATEGORY_CONSUMER, 0x02, hi, lo]
+            }
         }
     }
 
@@ -290,6 +353,9 @@ impl OnboardAction {
             }
             Self::Mouse(value) => held.is_mouse_button(value),
             Self::Hypershift => held.category == CATEGORY_HYPERSHIFT,
+            Self::Consumer(usage) => {
+                held.category == CATEGORY_CONSUMER && u16::from_be_bytes([held.modifier, held.usage]) == usage
+            }
         }
     }
 }
@@ -458,10 +524,25 @@ impl VendorDevice {
     fn write_key_command(&self, button_id: u8, modifier: u8, usage: u8) -> Result<(), String> {
         let args = [0x01, button_id, 0x00, CATEGORY_KEY, 0x02, modifier, usage, 0x00, 0x00, 0x00];
         self.command(CLASS_BUTTON, CMD_SET_BUTTON, &args)?;
-        if self.holds(button_id, modifier, usage)? {
+        if self.holds(button_id, OnboardAction::Key { modifier, usage })? {
             Ok(())
         } else {
             Err(format!("mouse did not confirm button {button_id:#02x} -> usage {usage:#02x}"))
+        }
+    }
+
+    /// Stores one binding target and requires it to read back. A consumer
+    /// signal goes into both layers: should the firmware Hypershift ever fire,
+    /// the button still sends Sidearm's inert signal instead of a leftover
+    /// offline-profile shortcut.
+    fn write_target(&self, button_id: u8, action: OnboardAction) -> Result<(), String> {
+        match action {
+            OnboardAction::Key { modifier, usage } => self.write_button(button_id, usage, modifier),
+            OnboardAction::Consumer(_) => {
+                self.write_record(button_id, 0, action)?;
+                self.write_record(button_id, 1, action)
+            }
+            other => self.write_record(button_id, 0, other),
         }
     }
 
@@ -470,10 +551,10 @@ impl VendorDevice {
     /// [`Self::drifted_bindings`]: they were never the mouse's job.
     pub fn apply_bindings(&self, bindings: &[OnboardBinding]) -> Result<(), String> {
         for binding in bindings {
-            let Ok((button_id, modifier, usage)) = binding_target(self.model, binding) else {
+            let Ok((button_id, action)) = binding_target(self.model, binding) else {
                 continue;
             };
-            self.write_button(button_id, usage, modifier)?;
+            self.write_target(button_id, action)?;
         }
         Ok(())
     }
@@ -486,10 +567,10 @@ impl VendorDevice {
     pub fn verify(&self, bindings: &[OnboardBinding]) -> Result<OnboardReport, String> {
         let mut report = OnboardReport::default();
         for binding in bindings {
-            let Ok((button_id, modifier, usage)) = binding_target(self.model, binding) else {
+            let Ok((button_id, action)) = binding_target(self.model, binding) else {
                 continue;
             };
-            if self.write_button(button_id, usage, modifier).is_ok() {
+            if self.write_target(button_id, action).is_ok() {
                 report.confirmed.push(OnboardMapping {
                     control_id: binding.control_id.clone(),
                     encoded_key: binding.encoded_key.clone(),
@@ -732,18 +813,33 @@ impl VendorDevice {
     pub fn drifted_bindings(&self, bindings: &[OnboardBinding]) -> Result<Vec<String>, String> {
         let mut drifted = Vec::new();
         for binding in bindings {
-            let Ok((button_id, modifier, usage)) = binding_target(self.model, binding) else {
+            let Ok((button_id, action)) = binding_target(self.model, binding) else {
                 continue;
             };
-            if self.holds(button_id, modifier, usage)? {
+            if self.holds(button_id, action)? {
                 continue;
             }
-            if self.holds(button_id, modifier, usage)? {
+            if self.holds(button_id, action)? {
                 continue;
             }
             drifted.push(binding.control_id.clone());
         }
         Ok(drifted)
+    }
+
+    /// Whether `control_id`'s button holds Sidearm's own signal of the *other*
+    /// mode (`F13`..`F24` while consumer signals are on, or the reverse): a
+    /// switch of signal kind, rewritten quietly instead of reported as Razer
+    /// taking the mouse over.
+    pub fn holds_other_signal(&self, bindings: &[OnboardBinding], control_id: &str) -> Result<bool, String> {
+        let Some(binding) = bindings.iter().find(|b| b.control_id == control_id) else {
+            return Ok(false);
+        };
+        let other_mode = !CONSUMER_SIGNALS.load(Ordering::Relaxed);
+        match (target_in_mode(self.model, binding, other_mode), binding_target(self.model, binding)) {
+            (Ok(other), Ok(current)) if other != current => self.holds(other.0, other.1),
+            _ => Ok(false),
+        }
     }
 
     /// Control ids of the model's native buttons that no longer act as their plain mouse
@@ -758,11 +854,10 @@ impl VendorDevice {
         Ok(drifted)
     }
 
-    /// Whether the device's stored record for `button_id` is the key `usage` with
-    /// the modifier mask `modifier`, as this app writes it.
-    fn holds(&self, button_id: u8, modifier: u8, usage: u8) -> Result<bool, String> {
-        let held = self.read_button(button_id)?;
-        Ok(held.category == CATEGORY_KEY && held.modifier == modifier && held.usage == usage)
+    /// Whether the device's stored standard-layer record for `button_id` is
+    /// `action`, as this app writes it.
+    fn holds(&self, button_id: u8, action: OnboardAction) -> Result<bool, String> {
+        Ok(action.matches(&self.read_button(button_id)?))
     }
 
     /// Sends one command-class request and returns the reply payload, whose byte
@@ -873,7 +968,32 @@ fn record_matches(written: &[u8; PAYLOAD_LEN], read: &[u8; PAYLOAD_LEN]) -> bool
 }
 
 fn find_interface_path(vid: u16, pid: u16, interface: u8) -> Result<String, String> {
-    let needle = interface_needle(vid, pid, interface);
+    find_paths(&interface_needle(vid, pid, interface)).map(|paths| paths[0].clone())
+}
+
+/// Device paths of the config model's consumer collection (`…&MI_01&Col03#…`)
+/// for the capture helper's reader: every matching leaf of every PID, since the
+/// registry keeps leaves of devices no longer present (another USB port, a
+/// re-paired dongle) and only the live one opens.
+pub fn consumer_collection_paths() -> Result<Vec<String>, String> {
+    let model = config_model();
+    let consumer = model.consumer.as_ref().ok_or_else(|| format!("{} has no consumer signals", model.name))?;
+    let paths: Vec<String> = model
+        .pids
+        .iter()
+        .filter_map(|pid| find_paths(&collection_needle(model.vid, *pid, consumer.interface, consumer.collection)).ok())
+        .flatten()
+        .collect();
+    if paths.is_empty() { Err(NO_INTERFACE.to_string()) } else { Ok(paths) }
+}
+
+/// A top-level collection's leaf: the interface needle plus `&COLxx`, closed by
+/// the `#` that ends the hardware id so `Col03` never matches `Col03&Col01`.
+fn collection_needle(vid: u16, pid: u16, interface: u8, collection: u8) -> String {
+    format!("{}&COL{collection:02X}#", interface_needle(vid, pid, interface))
+}
+
+fn find_paths(needle: &str) -> Result<Vec<String>, String> {
     let classes_path: Vec<u16> = DEVICE_CLASSES
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -891,7 +1011,7 @@ fn find_interface_path(vid: u16, pid: u16, interface: u8) -> Result<String, Stri
     if status != 0 {
         return Err(format!("RegOpenKeyExW({DEVICE_CLASSES}): {}", Error::last_os_error()));
     }
-    let result = find_class_key(classes, &needle);
+    let result = find_class_key(classes, needle);
     unsafe { RegCloseKey(classes) };
     result
 }
@@ -912,7 +1032,7 @@ fn interface_path(leaf: &str, needle: &str) -> Option<String> {
     rest.to_uppercase().contains(needle).then(|| format!(r"\\?\{rest}"))
 }
 
-fn find_class_key(classes: HKEY, needle: &str) -> Result<String, String> {
+fn find_class_key(classes: HKEY, needle: &str) -> Result<Vec<String>, String> {
     let mut index = 0u32;
     loop {
         let mut name = [0u16; 64];
@@ -934,7 +1054,7 @@ fn find_class_key(classes: HKEY, needle: &str) -> Result<String, String> {
 
 /// Opens the class key through the already-open `DeviceClasses` handle: its name
 /// is only a subkey, so it cannot be resolved from the root of HKLM.
-fn find_leaf(parent: HKEY, class: String, needle: &str) -> Result<String, String> {
+fn find_leaf(parent: HKEY, class: String, needle: &str) -> Result<Vec<String>, String> {
     let mut class_key: HKEY = std::ptr::null_mut();
     let wide: Vec<u16> = class
         .encode_utf16()
@@ -947,8 +1067,11 @@ fn find_leaf(parent: HKEY, class: String, needle: &str) -> Result<String, String
             Error::last_os_error()
         ));
     }
+    // Every matching leaf, in registry order: the first is what the vendor
+    // collection opens; the consumer reader tries them all.
+    let mut paths = Vec::new();
     let mut index = 0u32;
-    let result = loop {
+    loop {
         let mut name = [0u16; 512];
         let mut len = name.len() as u32;
         if unsafe { RegEnumKeyExW(class_key, index, name.as_mut_ptr(), &mut len,
@@ -956,16 +1079,14 @@ fn find_leaf(parent: HKEY, class: String, needle: &str) -> Result<String, String
                                   std::ptr::null_mut(), std::ptr::null_mut()) }
             != 0
         {
-            break Err(NO_INTERFACE.to_string());
+            break;
         }
         let leaf = String::from_utf16_lossy(&name[..len as usize]);
-        if let Some(path) = interface_path(&leaf, needle) {
-            break Ok(path);
-        }
+        paths.extend(interface_path(&leaf, needle));
         index += 1;
-    };
+    }
     unsafe { RegCloseKey(class_key) };
-    result
+    if paths.is_empty() { Err(NO_INTERFACE.to_string()) } else { Ok(paths) }
 }
 
 #[cfg(test)]
@@ -1069,6 +1190,41 @@ mod tests {
         assert!(!record_matches(&written, &stale));
     }
 
+    /// Hardware only: writes Sidearm's consumer signals into the live mouse,
+    /// requires the drift check to call them in place and the `F13`..`F24`
+    /// signals "the other kind", and opens the consumer collection the helper
+    /// reads (shared, next to Razer's driver). Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn consumer_signals_round_trip_on_the_live_device() {
+        let device = VendorDevice::open_connected().expect("connect the Razer Naga V2 HyperSpeed");
+        let mut bindings: Vec<OnboardBinding> =
+            (0..12).map(|i| binding(&format!("thumb_{:02}", i + 1), &format!("F{}", 13 + i))).collect();
+        bindings.push(binding("top_aux_01", "Alt+F23"));
+        bindings.push(binding("top_aux_02", "Alt+F24"));
+        for b in &bindings {
+            let (button_id, action) = target_in_mode(device.model(), b, true).unwrap();
+            device.write_target(button_id, action).unwrap_or_else(|e| panic!("{}: {e}", b.control_id));
+            assert!(action.matches(&device.read_button_at(button_id, 1).unwrap()), "{} layer 1", b.control_id);
+        }
+        assert_eq!(device.drifted_bindings(&bindings), Ok(Vec::new()));
+        for b in &bindings {
+            assert_eq!(device.holds_other_signal(&bindings, &b.control_id), Ok(false), "{}", b.control_id);
+        }
+        let paths = consumer_collection_paths().expect("consumer collection in the registry");
+        let opened = paths.iter().find(|path| std::fs::File::open(path).is_ok());
+        println!("consumer collection: {opened:?} of {paths:?}");
+        assert!(opened.is_some(), "no consumer collection opens: {paths:?}");
+    }
+
+    /// Read-only: prints the "Help verify" report of the connected mouse.
+    #[test]
+    #[ignore]
+    fn prints_the_live_device_report() {
+        let device = VendorDevice::open_connected().expect("connect a catalog mouse to run this test");
+        println!("{}", device.probe_report());
+    }
+
     /// Hardware only: opens the live vendor collection and writes the factory
     /// `F13`..`F24` mapping the capture recorded, so every write must be echoed
     /// by the mouse, and `verify` must then confirm all twelve bindings.
@@ -1132,22 +1288,49 @@ mod tests {
         assert_eq!(MODE_DRIVER, 0x03);
     }
 
+    fn binding(control: &str, key: &str) -> OnboardBinding {
+        OnboardBinding { control_id: control.to_string(), encoded_key: key.to_string() }
+    }
+
     #[test]
-    fn binding_target_accepts_f13_to_f24_on_key_buttons() {
-        let binding = |control: &str, key: &str| OnboardBinding {
-            control_id: control.to_string(),
-            encoded_key: key.to_string(),
-        };
-        assert_eq!(binding_target(&NAGA_V2_HYPERSPEED, &binding("thumb_01", "F13")), Ok((0x40, 0x00, 0x68)));
-        assert_eq!(binding_target(&NAGA_V2_HYPERSPEED, &binding("thumb_12", "F24")), Ok((0x4b, 0x00, 0x73)));
+    fn key_mode_target_accepts_f13_to_f24_on_key_buttons() {
+        let target = |control: &str, key: &str| target_in_mode(&NAGA_V2_HYPERSPEED, &binding(control, key), false);
+        let key = |modifier, usage| OnboardAction::Key { modifier, usage };
+        assert_eq!(target("thumb_01", "F13"), Ok((0x40, key(0x00, 0x68))));
+        assert_eq!(target("thumb_12", "F24"), Ok((0x4b, key(0x00, 0x73))));
         // The top buttons, with the mask the hardware read back for `Alt+F23`.
-        assert_eq!(binding_target(&NAGA_V2_HYPERSPEED, &binding("top_aux_01", "Alt+F23")), Ok((0x0b, 0x04, 0x72)));
+        assert_eq!(target("top_aux_01", "Alt+F23"), Ok((0x0b, key(0x04, 0x72))));
+        assert_eq!(target("thumb_01", "Ctrl+Alt+Shift+F13"), Ok((0x40, key(0x07, 0x68))));
+        assert!(target("mouse_left", "F13").is_err());
+        assert!(target("thumb_01", "F12").is_err());
+    }
+
+    /// Consumer mode ignores the encoded key: the button's catalog usage is the
+    /// signal, and the encoded key only names it for the resolver.
+    #[test]
+    fn consumer_mode_target_is_the_catalog_usage() {
+        let target = |control: &str, key: &str| target_in_mode(&NAGA_V2_HYPERSPEED, &binding(control, key), true);
+        assert_eq!(target("thumb_01", "F13"), Ok((0x40, OnboardAction::Consumer(0x10))));
+        assert_eq!(target("top_aux_02", "Alt+F24"), Ok((0x0c, OnboardAction::Consumer(0xfe))));
+        assert!(target("mouse_left", "F13").is_err());
+        // A model without the path keeps the keyboard signal.
+        let keys_only = crate::device_catalog::NativeModel { consumer: None, ..NAGA_V2_HYPERSPEED };
         assert_eq!(
-            binding_target(&NAGA_V2_HYPERSPEED, &binding("thumb_01", "Ctrl+Alt+Shift+F13")),
-            Ok((0x40, 0x07, 0x68))
+            target_in_mode(&keys_only, &binding("thumb_01", "F13"), true),
+            Ok((0x40, OnboardAction::Key { modifier: 0, usage: 0x68 }))
         );
-        assert!(binding_target(&NAGA_V2_HYPERSPEED, &binding("mouse_left", "F13")).is_err());
-        assert!(binding_target(&NAGA_V2_HYPERSPEED, &binding("thumb_01", "F12")).is_err());
+    }
+
+    /// Record bytes of a consumer signal, and how a read-back record matches:
+    /// `0x8c` answers `profile, button, layer, 0a, 02, usage_hi, usage_lo`.
+    #[test]
+    fn consumer_records_are_category_0a_with_a_big_endian_usage() {
+        assert_eq!(OnboardAction::Consumer(0x023c).bytes(), [0x0a, 0x02, 0x02, 0x3c]);
+        let held = |category, modifier, usage| ButtonRecord { category, modifier, usage };
+        assert!(OnboardAction::Consumer(0x10).matches(&held(0x0a, 0x00, 0x10)));
+        assert!(!OnboardAction::Consumer(0x10).matches(&held(0x0a, 0x00, 0x11)));
+        assert!(!OnboardAction::Consumer(0x10).matches(&held(0x02, 0x00, 0x10)));
+        assert!(!OnboardAction::Key { modifier: 0, usage: 0x10 }.matches(&held(0x0a, 0x00, 0x10)));
     }
 
     /// The same filter `src/lib/onboard-mapping.ts` applies: standard layer and
