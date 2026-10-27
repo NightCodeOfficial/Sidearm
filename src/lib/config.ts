@@ -81,9 +81,13 @@ export interface Settings {
   hypershiftTrigger?: HypershiftTrigger;
   /** Draw the mouse battery level as a badge on the tray icon. */
   showBatteryInTray?: boolean;
-  /** Profile written into the mouse on exit; absent = the one in effect then. */
+  /** Profile written into the mouse on exit; absent = the fallback profile,
+   *  `OFFLINE_PROFILE_ACTIVE` = the one in effect then. */
   offlineProfileId?: string;
 }
+
+/** `Settings.offlineProfileId` for "the profile in effect at exit" (Rust `config::OFFLINE_PROFILE_ACTIVE`). */
+export const OFFLINE_PROFILE_ACTIVE = "@active";
 
 export interface Profile {
   id: string;

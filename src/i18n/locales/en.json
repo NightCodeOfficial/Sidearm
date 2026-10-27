@@ -1288,6 +1288,7 @@
     "offlineHeader": "Without Sidearm",
     "offlineHelp": "Which profile is written into the mouse memory when Sidearm exits. The mouse plays keys, shortcuts and mouse buttons on its own; text, macros and launches do not work without Sidearm.",
     "offlineActive": "Active at exit",
+    "offlineFallback": "{{name}} (fallback)",
     "batteryHelp": "Below 10% Sidearm warns you — at most once a day.",
     "batteryValue": "{{percent}}%",
     "batteryLow": "Mouse battery low: {{percent}}%",

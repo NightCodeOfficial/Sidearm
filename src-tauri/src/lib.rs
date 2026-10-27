@@ -2781,14 +2781,16 @@ fn write_offline_mouse_profile(app: &AppHandle) {
         return;
     };
     let store = app.state::<Arc<Mutex<RuntimeStore>>>();
-    let chosen = config
-        .settings
-        .offline_profile_id
-        .clone()
-        .filter(|id| config.profiles.iter().any(|p| &p.id == id));
-    let profile_id = chosen
-        .or_else(|| store.lock().ok().and_then(|store| store.last_active_profile_id().map(str::to_owned)))
-        .unwrap_or_else(|| config.settings.fallback_profile_id.clone());
+    // Default: the fallback profile. The one in effect at exit depends on which
+    // window happened to be focused — a per-app profile full of snippets the
+    // mouse cannot play left buttons dead without Sidearm.
+    let in_effect = || store.lock().ok().and_then(|store| store.last_active_profile_id().map(str::to_owned));
+    let profile_id = match config.settings.offline_profile_id.as_deref() {
+        Some(config::OFFLINE_PROFILE_ACTIVE) => in_effect(),
+        Some(id) => config.profiles.iter().any(|p| p.id == id).then(|| id.to_owned()),
+        None => None,
+    }
+    .unwrap_or_else(|| config.settings.fallback_profile_id.clone());
     mouse_offline::write_offline_profile(&config, &profile_id, &config_dir);
 }
 

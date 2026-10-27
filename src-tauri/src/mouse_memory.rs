@@ -58,12 +58,16 @@ pub const PAYLOAD_LEN: usize = 90;
 const RECORD_MARKER: [u8; 4] = [0x0a, 0x02, 0x0c, 0x01];
 /// First HID usage of the function keys the thumb column can be mapped to.
 const USAGE_F13: u8 = 0x68;
-/// HID modifier mask bits of a key record (left-hand keys). A thumb's bare
-/// `F13`..`F24` has mask `0x00`; the top buttons' `Alt+F23`/`Alt+F24` have
-/// `0x04`. A `0x07` makes the mouse emit `Ctrl+Alt+Shift+Fxx`.
+/// HID modifier mask bits of a key record. Shift and Alt are the RIGHT-hand
+/// keys: this firmware never plays the left Shift (`0x02`) or left Alt
+/// (`0x04`) bit, alone or combined (measured 2026-10-27 at the Raw Input level:
+/// every other bit — both Ctrl, both Win, right Shift, right Alt — arrives).
+/// Limit: on a layout with AltGr (Russian) Windows adds Ctrl to the right Alt,
+/// so `Alt+X` plays as `Ctrl+Alt+X` there. A thumb's bare `F13`..`F24` has
+/// mask `0x00`.
 const MOD_CTRL: u8 = 0x01;
-const MOD_SHIFT: u8 = 0x02;
-const MOD_ALT: u8 = 0x04;
+const MOD_SHIFT: u8 = 0x20;
+const MOD_ALT: u8 = 0x40;
 const MOD_WIN: u8 = 0x08;
 /// Device mode that makes the mouse emit the records written into onboard
 /// memory — the only mode Sidearm works in.
@@ -171,15 +175,15 @@ pub fn button_id_for_control(control_id: &str) -> Option<u8> {
 
 /// HID modifier mask of a hotkey's modifiers.
 fn modifier_mask(modifiers: &crate::hotkeys::HotkeyModifiers) -> u8 {
-    [
-        (modifiers.ctrl, MOD_CTRL),
-        (modifiers.shift, MOD_SHIFT),
-        (modifiers.alt, MOD_ALT),
-        (modifiers.win, MOD_WIN),
-    ]
-    .iter()
-    .filter(|(held, _)| *held)
-    .fold(0, |mask, (_, bit)| mask | bit)
+    modifier_bits(modifiers.ctrl, modifiers.shift, modifiers.alt, modifiers.win)
+}
+
+/// Key-record modifier mask for these modifiers (see [`MOD_SHIFT`]).
+pub fn modifier_bits(ctrl: bool, shift: bool, alt: bool, win: bool) -> u8 {
+    [(ctrl, MOD_CTRL), (shift, MOD_SHIFT), (alt, MOD_ALT), (win, MOD_WIN)]
+        .iter()
+        .filter(|(held, _)| *held)
+        .fold(0, |mask, (_, bit)| mask | bit)
 }
 
 /// HID usage for a key name; only `F13` through `F24` fit onboard memory.
@@ -1179,6 +1183,16 @@ mod tests {
     use super::*;
     use crate::device_catalog::NAGA_V2_HYPERSPEED;
 
+    /// Shift and Alt go out as the right-hand keys: the firmware drops the
+    /// left ones (measured).
+    #[test]
+    fn modifier_bits_use_the_keys_the_firmware_plays() {
+        assert_eq!(modifier_bits(true, false, false, false), 0x01);
+        assert_eq!(modifier_bits(false, true, false, false), 0x20);
+        assert_eq!(modifier_bits(false, false, true, false), 0x40);
+        assert_eq!(modifier_bits(false, true, true, true), 0x68);
+    }
+
     /// A reply counts only when it echoes the request's class and command:
     /// Razer's driver can read our report slot first and leave us its reply.
     #[test]
@@ -1310,7 +1324,16 @@ mod tests {
         bindings
             .iter()
             .filter_map(|b| device.model().button_id_for(&b.control_id))
-            .flat_map(|id| [0, 1].map(|layer| device.raw_button_record(id, layer).expect("record readable")))
+            .flat_map(|id| {
+                [0, 1].map(|layer| {
+                    let mut record = device.raw_button_record(id, layer).expect("record readable");
+                    // Byte 2 of a reply is the layer of the LAST write, not the
+                    // one asked for (fang, and measured: written back as read, a
+                    // layer-0 record landed on layer 1 and layer 0 kept the test's).
+                    record[2] = layer;
+                    record
+                })
+            })
             .collect()
     }
 
@@ -1378,6 +1401,134 @@ mod tests {
         let after = (device.dpi().unwrap(), device.dpi_in(VARSTORE).unwrap());
         device.set_dpi(live, false).unwrap();
         assert_eq!(after, (probe, stored), "live write of {probe}: (live, stored)");
+    }
+
+    /// Hardware, interactive — **writes the mouse's memory**, then puts it back:
+    /// thumbs 1..8 get `F24` with one modifier bit each (`0x01`..`0x80`); press
+    /// them in order within 45 s. Prints which keys Windows saw, i.e. what each
+    /// bit of a key record's modifier byte means to this firmware.
+    #[test]
+    #[ignore]
+    fn modifier_bits_as_the_firmware_plays_them() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let device = VendorDevice::open_connected().expect("connect a catalog mouse");
+        let bindings: Vec<OnboardBinding> = (1..=8).map(|i| binding(&format!("thumb_{i:02}"), "F24")).collect();
+        let saved = snapshot(&device, &bindings);
+        for (index, b) in bindings.iter().enumerate() {
+            let button_id = device.model().button_id_for(&b.control_id).unwrap();
+            // The command path, as the offline profile writes it.
+            // `SIDEARM_PROBE_MODS=02,03,...` (hex) overrides the single bits.
+            let modifier = std::env::var("SIDEARM_PROBE_MODS")
+                .ok()
+                .and_then(|list| list.split(',').nth(index).and_then(|hex| u8::from_str_radix(hex.trim(), 16).ok()))
+                .unwrap_or(1 << index);
+            println!("thumb {}: modifier {modifier:#04x}", index + 1);
+            device.write_record(button_id, 0, OnboardAction::Key { modifier, usage: USAGE_F13 + 11 }).unwrap();
+        }
+        drop(device);
+        println!("press thumbs 1..8 now, one at a time");
+        let watched = [
+            ("LCtrl", 0xA2), ("LShift", 0xA0), ("LAlt", 0xA4), ("LWin", 0x5B),
+            ("RCtrl", 0xA3), ("RShift", 0xA1), ("RAlt", 0xA5), ("RWin", 0x5C), ("F24", 0x87),
+        ];
+        let mut held = [false; 9];
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        while std::time::Instant::now() < end {
+            for (i, (name, vk)) in watched.iter().enumerate() {
+                let down = unsafe { GetAsyncKeyState(*vk) } as u16 & 0x8000 != 0;
+                if down != held[i] {
+                    held[i] = down;
+                    println!("{:?} {name} {}", std::time::SystemTime::now(), if down { "DOWN" } else { "up" });
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let device = VendorDevice::open_connected().expect("reopen");
+        put_back(&device, &saved);
+        println!("records put back");
+    }
+
+    /// Hardware, interactive — **writes the mouse's memory**, then puts it back:
+    /// thumbs 1..4 get raw key records that spell the left Alt / Shift as key
+    /// usages (`E2`/`E1`) instead of modifier bits, and a 3-byte record with two
+    /// usages. Press 1..4 within 45 s; prints what Windows saw.
+    #[test]
+    #[ignore]
+    fn left_modifiers_as_key_usages() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let device = VendorDevice::open_connected().expect("connect a catalog mouse");
+        let bindings: Vec<OnboardBinding> = (1..=4).map(|i| binding(&format!("thumb_{i:02}"), "F24")).collect();
+        let saved = snapshot(&device, &bindings);
+        let records: [&[u8]; 4] = [&[0x02, 0x02, 0x00, 0xe2], &[0x02, 0x02, 0x20, 0xe2], &[0x02, 0x02, 0x00, 0xe1], &[0x02, 0x03, 0x00, 0xe2, 0x3d]];
+        for (b, record) in bindings.iter().zip(records) {
+            let id = device.model().button_id_for(&b.control_id).unwrap();
+            let mut args = vec![0x01, id, 0x00];
+            args.extend_from_slice(record);
+            args.resize(10, 0);
+            let written = device.command(CLASS_BUTTON, CMD_SET_BUTTON, &args).map(|_| ());
+            let held = device.raw_button_record(id, 0);
+            println!("{}: wrote {record:02x?} -> {written:?}, reads {held:02x?}", b.control_id);
+        }
+        drop(device);
+        println!("press thumbs 1..4 now");
+        let watched = [("LCtrl", 0xA2), ("LShift", 0xA0), ("LAlt", 0xA4), ("RShift", 0xA1), ("RAlt", 0xA5), ("F4", 0x73)];
+        let mut held = [false; 6];
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        while std::time::Instant::now() < end {
+            for (i, (name, vk)) in watched.iter().enumerate() {
+                let down = unsafe { GetAsyncKeyState(*vk) } as u16 & 0x8000 != 0;
+                if down != held[i] {
+                    held[i] = down;
+                    println!("{:?} {name} {}", std::time::SystemTime::now(), if down { "DOWN" } else { "up" });
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let device = VendorDevice::open_connected().expect("reopen");
+        put_back(&device, &saved);
+        println!("records put back");
+    }
+
+    /// Hardware, read-only: the input usages each keyboard-page collection of the
+    /// mouse declares (HID report descriptor), to see which keys it can send.
+    #[test]
+    #[ignore]
+    fn keyboard_collections_declare_their_keys() {
+        use windows_sys::Win32::Devices::HumanInterfaceDevice::*;
+        for leaf in ["MI_01&COL01#", "MI_02#", "MI_00&COL03&COL01#", "MI_00&COL03&COL02#"] {
+            let needle = format!("VID_1532&PID_00B4&{leaf}");
+            let Ok(paths) = find_paths(&needle) else { println!("{leaf}: not in the registry"); continue };
+            for path in paths {
+                let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+                let handle = unsafe { CreateFileW(wide.as_ptr(), 0, 3, std::ptr::null(), 3, 0x80, INVALID_HANDLE_VALUE) };
+                if handle == INVALID_HANDLE_VALUE {
+                    println!("{leaf}: {}", Error::last_os_error());
+                    continue;
+                }
+                let mut data: PHIDP_PREPARSED_DATA = 0;
+                if !unsafe { HidD_GetPreparsedData(handle, &mut data) } {
+                    println!("{leaf}: no preparsed data");
+                    continue;
+                }
+                let mut caps: HIDP_CAPS = unsafe { std::mem::zeroed() };
+                unsafe { HidP_GetCaps(data, &mut caps) };
+                println!("{leaf}: page {:#06x} usage {:#04x}, input report {} bytes, {} button caps",
+                    caps.UsagePage, caps.Usage, caps.InputReportByteLength, caps.NumberInputButtonCaps);
+                let mut count = caps.NumberInputButtonCaps;
+                let mut buttons: Vec<HIDP_BUTTON_CAPS> = vec![unsafe { std::mem::zeroed() }; count as usize];
+                unsafe { HidP_GetButtonCaps(HidP_Input, buttons.as_mut_ptr(), &mut count, data) };
+                for b in &buttons[..count as usize] {
+                    let (min, max) = if b.IsRange {
+                        unsafe { (b.Anonymous.Range.UsageMin, b.Anonymous.Range.UsageMax) }
+                    } else {
+                        unsafe { (b.Anonymous.NotRange.Usage, b.Anonymous.NotRange.Usage) }
+                    };
+                    println!("    report {:#04x} page {:#06x} usages {min:#04x}..={max:#04x}", b.ReportID, b.UsagePage);
+                }
+                unsafe { HidD_FreePreparsedData(data) };
+                unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+            }
+        }
     }
 
     /// Read-only: prints the "Help verify" report of the connected mouse.
@@ -1458,9 +1609,9 @@ mod tests {
         let key = |modifier, usage| OnboardAction::Key { modifier, usage };
         assert_eq!(target("thumb_01", "F13"), Ok((0x40, key(0x00, 0x68))));
         assert_eq!(target("thumb_12", "F24"), Ok((0x4b, key(0x00, 0x73))));
-        // The top buttons, with the mask the hardware read back for `Alt+F23`.
-        assert_eq!(target("top_aux_01", "Alt+F23"), Ok((0x0b, key(0x04, 0x72))));
-        assert_eq!(target("thumb_01", "Ctrl+Alt+Shift+F13"), Ok((0x40, key(0x07, 0x68))));
+        // Alt and Shift as the right-hand keys the firmware plays.
+        assert_eq!(target("top_aux_01", "Alt+F23"), Ok((0x0b, key(0x40, 0x72))));
+        assert_eq!(target("thumb_01", "Ctrl+Alt+Shift+F13"), Ok((0x40, key(0x61, 0x68))));
         assert!(target("mouse_left", "F13").is_err());
         assert!(target("thumb_01", "F12").is_err());
     }

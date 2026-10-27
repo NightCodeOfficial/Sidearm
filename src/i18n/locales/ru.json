@@ -1302,6 +1302,7 @@
     "offlineHeader": "Без Sidearm",
     "offlineHelp": "Какой профиль записать в память мыши при выходе из Sidearm. Мышь сама выполняет только клавиши, сочетания и кнопки мыши; текст, макросы и запуск программ без Sidearm не работают.",
     "offlineActive": "Активный при выходе",
+    "offlineFallback": "{{name}} (основной)",
     "batteryHelp": "При заряде ниже 10% Sidearm предупредит — не чаще раза в сутки.",
     "batteryValue": "{{percent}}%",
     "batteryLow": "Низкий заряд мыши: {{percent}}%",

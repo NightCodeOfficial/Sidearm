@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { AppConfig, Profile } from "../lib/config";
+import { OFFLINE_PROFILE_ACTIVE, type AppConfig, type Profile } from "../lib/config";
 import { upsertProfile } from "../lib/config-editing";
 import {
   getDeviceReport,
@@ -302,8 +302,16 @@ export function MouseWorkspace({
             ariaLabel={t("mouse.offlineHeader")}
             value={activeConfig.settings.offlineProfileId ?? ""}
             options={[
-              { value: "", label: t("mouse.offlineActive") },
-              ...profiles.map((profile) => ({ value: profile.id, label: profile.name })),
+              {
+                value: "",
+                label: t("mouse.offlineFallback", {
+                  name: profiles.find((p) => p.id === activeConfig.settings.fallbackProfileId)?.name ?? "",
+                }),
+              },
+              { value: OFFLINE_PROFILE_ACTIVE, label: t("mouse.offlineActive") },
+              ...profiles
+                .filter((profile) => profile.id !== activeConfig.settings.fallbackProfileId)
+                .map((profile) => ({ value: profile.id, label: profile.name })),
             ]}
             onChange={(id) =>
               updateDraft((config) => ({

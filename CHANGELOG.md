@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Shortcuts with Shift or Alt now work from the mouse's memory without
+  Sidearm (Alt+F4, Shift+Alt, Win+Shift+S…). The mouse's firmware ignores the
+  left Shift and left Alt, so they are stored as the right-hand keys. On the
+  Russian layout the right Alt acts as AltGr, so an Alt shortcut plays as
+  Ctrl+Alt there.
+
+### Changed
+- "Without Sidearm" now writes the fallback profile into the mouse by default.
+  "Active at exit" stored whichever window's profile happened to be in effect
+  — often a per-app profile whose snippets the mouse cannot play, leaving those
+  buttons dead without Sidearm. It stays available as an option.
+
 ## [0.11.0] — 2026-10-27
 
 The side buttons stop sending F13–F24: Sidearm reads them straight from the
