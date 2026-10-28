@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { AppConfig, Profile } from "../lib/config";
+import { OFFLINE_PROFILE_ACTIVE, type AppConfig, type Profile } from "../lib/config";
 import { upsertProfile } from "../lib/config-editing";
 import {
   getDeviceReport,
@@ -93,7 +93,8 @@ export function MouseWorkspace({
     let alive = true;
     let dispose: (() => void) | undefined;
     void listenActionExecutionEvent("action_executed", (event) => {
-      if (event.actionType === "mouseAction" && event.summary.startsWith("DPI switched to ")) {
+      const summaryText = typeof event.summary === "string" ? event.summary : event.summary.text;
+      if (event.actionType === "mouseAction" && summaryText.startsWith("DPI switched to ")) {
         void getMouseSettings().then((settings) => { if (alive) setDevice(settings); }, () => {});
       }
     }).then((fn) => { if (alive) dispose = fn; else fn(); });
@@ -227,7 +228,11 @@ export function MouseWorkspace({
             </div>
           </div>
           <p className="panel__muted help-sm">
-            {overrides ? t("mouse.profileHelpOn") : t("mouse.profileHelpOff")}
+            {overrides
+              ? t("mouse.profileHelpOn")
+              : device === null
+                ? t("mouse.profileNeedsMouse")
+                : t("mouse.profileHelpOff")}
           </p>
 
           {overrides ? (
@@ -326,8 +331,16 @@ export function MouseWorkspace({
             ariaLabel={t("mouse.offlineHeader")}
             value={activeConfig.settings.offlineProfileId ?? ""}
             options={[
-              { value: "", label: t("mouse.offlineActive") },
-              ...profiles.map((profile) => ({ value: profile.id, label: profile.name })),
+              {
+                value: "",
+                label: t("mouse.offlineFallback", {
+                  name: profiles.find((p) => p.id === activeConfig.settings.fallbackProfileId)?.name ?? "",
+                }),
+              },
+              { value: OFFLINE_PROFILE_ACTIVE, label: t("mouse.offlineActive") },
+              ...profiles
+                .filter((profile) => profile.id !== activeConfig.settings.fallbackProfileId)
+                .map((profile) => ({ value: profile.id, label: profile.name })),
             ]}
             onChange={(id) =>
               updateDraft((config) => ({

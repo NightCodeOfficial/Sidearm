@@ -81,9 +81,13 @@ export interface Settings {
   hypershiftTrigger?: HypershiftTrigger;
   /** Draw the mouse battery level as a badge on the tray icon. */
   showBatteryInTray?: boolean;
-  /** Profile written into the mouse on exit; absent = the one in effect then. */
+  /** Profile written into the mouse on exit; absent = the fallback profile,
+   *  `OFFLINE_PROFILE_ACTIVE` = the one in effect then. */
   offlineProfileId?: string;
 }
+
+/** `Settings.offlineProfileId` for "the profile in effect at exit" (Rust `config::OFFLINE_PROFILE_ACTIVE`). */
+export const OFFLINE_PROFILE_ACTIVE = "@active";
 
 export interface Profile {
   id: string;
@@ -340,8 +344,12 @@ export interface SaveConfigResponse {
 
 export interface CommandError {
   code: string;
+  /** Already translated by `normalizeCommandError` when the backend sent a key. */
   message: string;
   details?: string[];
+  /** i18n key under `backend.` (Rust `CommandError::from_ui`) and its params. */
+  key?: string;
+  params?: Record<string, string>;
 }
 
 export type PathMode = "portable" | "roaming" | "portableFallback";

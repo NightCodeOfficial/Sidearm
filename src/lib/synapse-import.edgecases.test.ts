@@ -3,10 +3,8 @@
  *
  * Property-based and unit edge-case tests for synapse-import.ts.
  *
- * Note: synapse-import.ts is a pure TypeScript TYPE/INTERFACE definition file.
- * It exports zero runtime functions — only types and interfaces. There is no
- * executable logic to test with vitest. All invariants that involve these types
- * are enforced at compile-time by TypeScript's type-checker.
+ * Note: synapse-import.ts is mostly TYPE/INTERFACE definitions; its one
+ * function, describeParsedAction, is covered in synapse-import.test.ts.
  *
  * Runtime coverage strategy:
  *   Instead of testing the module itself, we test the STRUCTURAL INTEGRITY of

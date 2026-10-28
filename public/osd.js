@@ -15,6 +15,10 @@ if (window.__TAURI_INTERNALS__) {
       var osd = document.getElementById("osd");
 
       el.textContent = name;
+      // The label comes translated from Rust; empty for a plain message.
+      var label = document.getElementById("osd-label");
+      label.textContent = d.label || "";
+      label.style.display = d.label ? "" : "none";
 
       osd.classList.remove(
         "osd--slide-in", "osd--fade-in", "osd--none",

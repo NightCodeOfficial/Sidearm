@@ -16,7 +16,7 @@ pub(crate) const INTERNAL_SENDINPUT_EXTRA_INFO: usize = 0x4E41_4741usize; // "NA
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortcutDispatchReport {
-    pub warnings: Vec<String>,
+    pub warnings: Vec<crate::ui_text::UiText>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,13 +131,11 @@ pub fn send_shortcut(
     let warnings = if reused_modifiers.is_empty() {
         Vec::new()
     } else {
-        vec![format!(
-            "Shortcut reused already pressed modifier(s): {}.",
-            reused_modifiers
-                .iter()
-                .map(|modifier| modifier.label())
-                .collect::<Vec<_>>()
-                .join(", ")
+        let modifiers = reused_modifiers.iter().map(|modifier| modifier.label()).collect::<Vec<_>>().join(", ");
+        vec![crate::ui_text!(
+            "input.modifiersReused",
+            "Shortcut reused already pressed modifier(s): {modifiers}.",
+            modifiers = modifiers
         )]
     };
 
@@ -2359,7 +2357,7 @@ pub fn send_vk_tap(vk: u16) -> Result<(), String> {
 
 #[derive(Debug, Clone)]
 pub struct MouseDispatchReport {
-    pub warnings: Vec<String>,
+    pub warnings: Vec<crate::ui_text::UiText>,
 }
 
 /// Send a mouse action (click, scroll, etc.) with optional keyboard modifiers.

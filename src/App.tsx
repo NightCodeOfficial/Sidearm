@@ -52,6 +52,7 @@ import {
   openStartupAppsSettings,
   reloadRuntime,
   setKeySignals,
+  setNativeTexts,
   listenSingleInstanceBlocked,
   listenTrayProfileChanged,
   listenQuickRuleStart,
@@ -64,6 +65,7 @@ import {
 } from "./lib/backend";
 import { displayNameForControl, displayNameForControlId, labelForLayer, relativeTime } from "./lib/labels";
 import { MOUSE_STATUS_NOTICES, type MouseStatusKind } from "./lib/onboard-mapping";
+import { nativeTexts } from "./lib/ui-text";
 import { exportProfileToFile } from "./lib/profile-transfer";
 import { isBuiltinControl } from "./lib/onboard-mapping";
 import type { ErrorActionKind } from "./lib/errors";
@@ -101,7 +103,16 @@ import { useTranslation } from "react-i18next";
 const ALL_HOTSPOT_IDS = [...Object.keys(sideViewHotspots), ...Object.keys(topViewHotspots)];
 
 function App() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+
+  // The tray and the OSD are drawn by Rust: hand them the texts in the UI
+  // language now and on every language switch.
+  useEffect(() => {
+    const send = () => void setNativeTexts(nativeTexts()).catch(() => undefined);
+    send();
+    i18n.on("languageChanged", send);
+    return () => i18n.off("languageChanged", send);
+  }, [i18n]);
 
   const [showMigrationDialog, setShowMigrationDialog] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -119,7 +130,12 @@ function App() {
 
   const handleAutoSaveFailed = useCallback(
     (reason: string) => {
-      showToast(t("toast.saveFailedRollback", { reason }), "warning", { label: t("toast.openConfig"), onClick: () => { void openConfigFolder(); } });
+      showToast(t("toast.saveFailedRollback", { reason }), "warning", {
+        label: t("toast.openConfig"),
+        onClick: () => {
+          void openConfigFolder().catch((e: unknown) => showToast(normalizeCommandError(e).message, "warning"));
+        },
+      });
     },
     [showToast, t],
   );

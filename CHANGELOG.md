@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.6] — 2026-10-28
+
+### Changed
+- The Synapse import list shows what each imported binding will do
+  ("Shortcut: Ctrl + Shift + C", "Sequence of 2 steps", the mouse action)
+  instead of only its action type.
+
+## [0.11.5] — 2026-10-28
+
+### Fixed
+- Messages from the backend — the runtime log, execution errors, live-test
+  results, the tray menu and tooltip, the on-screen notifications — follow the
+  UI language instead of always being Russian; the technical log is English.
+  Synapse imports name colliding profiles in the UI language too.
+
+## [0.11.4] — 2026-10-28
+
+### Fixed
+- The trigger-mode editor's "side buttons arrive one at a time" note shows only
+  when the side buttons send consumer signals (with F13–F24 they arrive together).
+- The greyed-out "Own settings" switch in the Mouse tab now says it waits for
+  the mouse's DPI and polling rate.
+- "Open folder" on the save-rollback toast reports its own failure.
+- README lists the recognised Naga V2 Pro / Pro / X and how to send a device report.
+
+## [0.11.3] — 2026-10-28
+
+### Fixed
+- Without Sidearm, shortcuts with Alt (Alt+F4…) now work in the Russian layout
+  too: the mouse taps them with the real left Alt and Shift through its "turbo"
+  key record, which — unlike a plain key record — the firmware plays with the
+  left modifiers. A modifier-only hold still uses the right-hand keys.
+
+## [0.11.2] — 2026-10-27
+
+### Fixed
+- No more "Couldn't update the mouse's own button mapping" after a save while
+  the mouse slept: a save writes the button signals into the mouse only when
+  they changed (assignments edited in the UI never change them).
+
+## [0.11.1] — 2026-10-27
+
+### Fixed
+- Shortcuts with Shift or Alt now work from the mouse's memory without
+  Sidearm (Alt+F4, Shift+Alt, Win+Shift+S…). The mouse's firmware ignores the
+  left Shift and left Alt, so they are stored as the right-hand keys. On the
+  Russian layout the right Alt acts as AltGr, so an Alt shortcut plays as
+  Ctrl+Alt there.
+
+### Changed
+- "Without Sidearm" now writes the fallback profile into the mouse by default.
+  "Active at exit" stored whichever window's profile happened to be in effect
+  — often a per-app profile whose snippets the mouse cannot play, leaving those
+  buttons dead without Sidearm. It stays available as an option.
+
 ## [0.11.0] — 2026-10-27
 
 The side buttons stop sending F13–F24: Sidearm reads them straight from the

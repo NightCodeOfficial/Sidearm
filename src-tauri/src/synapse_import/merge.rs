@@ -2,7 +2,7 @@
 //!
 //! Slice 1 implements append-only merge: every imported profile gets a fresh
 //! schema-valid ID and is added alongside existing profiles. Name collisions
-//! get a `(импорт)` suffix, matching the existing `importProfile` convention
+//! get a `(imported)` suffix, matching the existing `importProfile` convention
 //! on the frontend.
 
 use std::collections::HashMap;
@@ -48,7 +48,7 @@ pub fn apply_parsed_into_config(
         if options.merge_strategy == MergeStrategy::ReplaceByName {
             remove_profile_by_name(&mut config, &profile.name, &mut warnings);
         }
-        match append_profile(&mut config, profile, &mut warnings) {
+        match append_profile(&mut config, profile, &mut warnings, &options.name_suffix) {
             Ok(ProfileAddition { bindings, actions }) => {
                 summary.profiles_added += 1;
                 summary.bindings_added += bindings;
@@ -83,10 +83,11 @@ fn append_profile(
     config: &mut AppConfig,
     parsed: &ParsedProfile,
     warnings: &mut Vec<ImportWarning>,
+    name_suffix: &str,
 ) -> Result<ProfileAddition, String> {
     // Build a fresh Profile with a schema-valid ID and a unique human name.
     let new_profile_id = make_random_id("profile");
-    let new_name = unique_profile_name(&parsed.name, &config.profiles);
+    let new_name = unique_profile_name(&parsed.name, &config.profiles, name_suffix);
 
     // saturating_add so a pathological existing priority near i32::MAX (e.g. a
     // hand-edited config) degrades gracefully instead of overflow-panicking in
@@ -435,16 +436,17 @@ fn remove_profile_by_name(config: &mut AppConfig, name: &str, warnings: &mut Vec
         .retain(|a| !dropped_action_ids.contains(&a.id) || still_referenced.contains(&a.id));
 }
 
-fn unique_profile_name(base: &str, existing: &[Profile]) -> String {
+fn unique_profile_name(base: &str, existing: &[Profile], suffix: &str) -> String {
     let base = if base.trim().is_empty() {
         "Imported"
     } else {
         base
     };
+    let suffix = if suffix.trim().is_empty() { "imported" } else { suffix.trim() };
     let mut candidate = base.to_string();
     let mut n = 2usize;
-    // Each iteration produces a DISTINCT candidate ("base", "base (импорт)",
-    // "base (импорт 3)", …). With N existing profiles the pigeonhole principle
+    // Each iteration produces a DISTINCT candidate ("base", "base (imported)",
+    // "base (imported 3)", …). With N existing profiles the pigeonhole principle
     // guarantees a free name within N+1 attempts, so bound the loop by
     // existing.len()+2 — always large enough to reach a unique name, unlike the
     // old fixed cap of 1000 which could return a still-colliding name once more
@@ -452,9 +454,9 @@ fn unique_profile_name(base: &str, existing: &[Profile]) -> String {
     let max_attempts = existing.len() + 2;
     while existing.iter().any(|p| p.name == candidate) {
         candidate = if n == 2 {
-            format!("{base} (импорт)")
+            format!("{base} ({suffix})")
         } else {
-            format!("{base} (импорт {n})")
+            format!("{base} ({suffix} {n})")
         };
         n += 1;
         if n > max_attempts {
@@ -560,9 +562,9 @@ mod tests {
         };
         let result = apply_parsed_into_config(base, parsed, &ImportOptions::default());
         assert_eq!(result.config.profiles.len(), 2);
-        // Name collision resolution: Default → "Default (импорт)"
+        // Name collision resolution: Default → "Default (imported)"
         let imported = result.config.profiles.last().unwrap();
-        assert_eq!(imported.name, "Default (импорт)");
+        assert_eq!(imported.name, "Default (imported)");
         assert!(imported.id.starts_with("profile-"));
         // IDs are schema-valid
         assert!(
@@ -701,6 +703,7 @@ mod tests {
             &ImportOptions {
                 selected_profile_guids: None,
                 merge_strategy: MergeStrategy::ReplaceByName,
+                name_suffix: String::new(),
             },
         );
         // Profile "Gaming" exists exactly once (the new one), with the new name.
@@ -755,6 +758,7 @@ mod tests {
             &ImportOptions {
                 selected_profile_guids: None,
                 merge_strategy: MergeStrategy::ReplaceByName,
+                name_suffix: String::new(),
             },
         );
         // Exactly ONE same-named profile was removed (the first match); the
@@ -1199,6 +1203,7 @@ mod edge_proptests {
             &ImportOptions {
                 selected_profile_guids: Some(vec![]), // empty filter → nothing matches
                 merge_strategy: MergeStrategy::Append,
+                name_suffix: String::new(),
             },
         );
         assert_eq!(result.summary.profiles_added, 0);
@@ -1241,6 +1246,7 @@ mod edge_proptests {
             &ImportOptions {
                 selected_profile_guids: None,
                 merge_strategy: MergeStrategy::ReplaceByName,
+                name_suffix: String::new(),
             },
         );
         assert_eq!(result.config.profiles.len(), before_count + 1);

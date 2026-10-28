@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { uiText } from "./ui-text";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -115,6 +116,11 @@ export async function getDeviceReport(): Promise<string> {
 /** Opens a new GitHub issue for a device report in the browser. */
 export async function openDeviceReportIssue(): Promise<void> {
   return invoke<void>("open_device_report_issue");
+}
+
+/** Hands the tray and the OSD their texts in the UI language (`backend.*`). */
+export async function setNativeTexts(texts: Record<string, string>): Promise<void> {
+  return invoke<void>("set_native_texts", { texts });
 }
 
 /** Active mouse-path states plus the notices not shown yet (which it takes). */
@@ -586,12 +592,14 @@ export function normalizeCommandError(error: unknown): CommandError {
     "message" in error
   ) {
     const obj = error as Record<string, unknown>;
+    const english = typeof obj.message === "string" ? obj.message : "Command failed.";
     return {
       code: typeof obj.code === "string" ? obj.code : "command_error",
+      // A keyed backend error is shown in the UI language (English fallback).
       message:
-        typeof obj.message === "string"
-          ? obj.message
-          : "Command failed.",
+        typeof obj.key === "string"
+          ? uiText({ text: english, key: obj.key, params: obj.params as Record<string, string> | undefined })
+          : english,
       details: Array.isArray(obj.details)
         ? obj.details.filter(
             (detail): detail is string => typeof detail === "string",

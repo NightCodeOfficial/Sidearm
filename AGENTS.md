@@ -91,7 +91,7 @@ Windows-first desktop app that remaps a programmable mouse (Razer Naga) and keyb
 ## Project-Wide Contracts
 
 - Code comments in English.
-- All user-facing text goes through i18next with matching `en.json` + `ru.json` keys — never hardcode UI strings.
+- All user-facing text goes through i18next with matching `en.json` + `ru.json` keys — never hardcode UI strings. That includes text the Rust backend produces: no Russian (or other non-English) literals in Rust — see `src-tauri/AGENTS.md` (`ui_text!`).
 - No AI/assistant attribution anywhere (commits, PRs, code, docs).
 - Config is the source of truth: schema-first (`schemas/config.v3.schema.json` at the repo root, runtime-validated), atomic writes, rolling + daily backups, corrupt-recovery. The TS `AppConfig` (`src/lib/config.ts`) and Rust structs must stay in sync with the schema.
 - Adding an `ActionType` touches many mirrored sites — see `src/components/action-picker/AGENTS.md`.

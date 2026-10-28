@@ -1,3 +1,4 @@
+import { logCategory, uiText } from "../lib/ui-text";
 import { useTranslation } from "react-i18next";
 import type {
   Action,
@@ -271,8 +272,8 @@ export function DebugWorkspace(props: DebugWorkspaceProps) {
 
         {lastRuntimeError ? (
           <Notice variant="error" className="mt-10" title={t("debug.lastRuntimeError")}>
-            <strong>{lastRuntimeError.category}</strong>
-            <p>{lastRuntimeError.message}</p>
+            <strong>{logCategory(lastRuntimeError.category)}</strong>
+            <p>{uiText(lastRuntimeError.message)}</p>
           </Notice>
         ) : null}
       </div>

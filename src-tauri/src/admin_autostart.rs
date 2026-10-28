@@ -145,7 +145,7 @@ fn enable_elevated() -> Result<(), String> {
     // no escape for it, so such a path could not be pinned faithfully.
     if exe_path.contains('%') {
         return Err(format!(
-            "Путь к Sidearm содержит символ `%` — автозапуск от администратора для него не поддерживается: {exe_path}"
+            "The Sidearm path contains the `%` character — admin autostart does not support it: {exe_path}"
         ));
     }
     let manifest = current_pin_manifest(&exe)?;
@@ -195,7 +195,7 @@ fn run_elevated_helper(action: &str) -> Result<(), String> {
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
         let error = unsafe { GetLastError() };
         return Err(if error == ERROR_CANCELLED {
-            "Запуск от администратора отменён в UAC.".into()
+            "Elevation was cancelled in the UAC prompt.".into()
         } else {
             format!("ShellExecuteExW(runas): error {error}")
         });
@@ -212,9 +212,9 @@ fn run_elevated_helper(action: &str) -> Result<(), String> {
     match code {
         0 => Ok(()),
         c if c as i32 == HELPER_EXIT_FAILED => Err(
-            "Автозапуск от администратора не настроен (повышенный процесс завершился с ошибкой).".into(),
+            "Admin autostart is not set up (the elevated process failed).".into(),
         ),
-        c => Err(format!("Автозапуск от администратора не настроен: 0x{c:08X}")),
+        c => Err(format!("Admin autostart is not set up: 0x{c:08X}")),
     }
 }
 
@@ -606,7 +606,7 @@ mod tests {
     fn helper_exit_code_carries_the_hresult() {
         assert_eq!(win::hresult_in("RegisterTask: 0x80070005 Access is denied"), Some(0x8007_0005_u32 as i32));
         assert_eq!(win::hresult_in("create service: 0x80080017"), Some(0x8008_0017_u32 as i32));
-        assert_eq!(win::hresult_in("Путь к Sidearm содержит символ `%`"), None);
+        assert_eq!(win::hresult_in("The Sidearm path contains the `%` character"), None);
     }
 
     #[test]

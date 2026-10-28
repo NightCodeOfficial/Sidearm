@@ -8,10 +8,11 @@ import {
 } from "../lib/backend";
 import { toggleInSet } from "../lib/helpers";
 import { displayNameForControlId } from "../lib/labels";
-import type {
-  ImportSummary,
-  MergeStrategy,
-  ParsedSynapseProfiles,
+import {
+  describeParsedAction,
+  type ImportSummary,
+  type MergeStrategy,
+  type ParsedSynapseProfiles,
 } from "../lib/synapse-import";
 import { ModalFooter, ModalHeader, ModalShell } from "./shared";
 
@@ -69,6 +70,7 @@ export function SynapseImportModal({
         {
           selectedProfileGuids: Array.from(selected),
           mergeStrategy,
+          nameSuffix: t("profile.importSuffix"),
         },
         activeConfig,
       );
@@ -158,9 +160,7 @@ export function SynapseImportModal({
                                 {b.label}
                               </span>
                               <span className="synapse-binding-list__kind">
-                                {b.action.kind === "unmappable"
-                                  ? t("synapseImport.unmappable")
-                                  : t(`action.type.${b.action.kind}`)}
+                                {describeParsedAction(b.action, profile.macros)}
                               </span>
                             </li>
                           );

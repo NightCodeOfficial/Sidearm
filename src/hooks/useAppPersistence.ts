@@ -78,6 +78,8 @@ export function useAppPersistence(
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isSavingRef = useRef(false);
   const disposedRef = useRef(false);
+  /** The key-button signals last sent to the mouse (`null` = none this session). */
+  const onboardSentRef = useRef<string | null>(null);
   const onAutoSavedRef = useRef(onAutoSaved);
   onAutoSavedRef.current = onAutoSaved;
   const onAutoSaveFailedRef = useRef(onAutoSaveFailed);
@@ -141,14 +143,20 @@ export function useAppPersistence(
     }
   }
 
-  // The mouse keeps its own button mapping, so every config that reaches disk
-  // has to reach the mouse too. The mouse cannot be read, so this writes each
-  // binding and lets the mouse confirm it; a failure is not a config failure —
-  // the device may be offline or held by its vendor driver — so it is reported
-  // as a warning instead of rolling the just-saved config back.
+  // The mouse keeps its own button signals, so a config whose signals changed
+  // has to reach the mouse too; this writes each binding and lets the mouse
+  // confirm it. Only a change is written: the signals rarely change (never for
+  // the built-in Naga, whose codes the UI hides), and rewriting all of them on
+  // every save failed whenever the mouse slept. The first save of a session only
+  // records them — the backend guard put the mouse in line at start, and it
+  // also retries a write that failed here. A failure is not a config failure,
+  // so it is a warning instead of rolling the just-saved config back.
   async function writeOnboardMapping(config: AppConfig) {
     const bindings = onboardBindings(config);
-    if (bindings.length === 0) return;
+    const signature = JSON.stringify(bindings);
+    const previous = onboardSentRef.current;
+    onboardSentRef.current = signature;
+    if (bindings.length === 0 || previous === null || previous === signature) return;
     try {
       const report = await verifyOnboardMapping(bindings);
       if (report.failed.length > 0) {

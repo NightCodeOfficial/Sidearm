@@ -1,3 +1,4 @@
+import type { UiText } from "./ui-text";
 import type { ActionType, ControlId, Layer, MappingSource, TriggerMode } from "./config";
 
 export type RuntimeStatus = "idle" | "running";
@@ -32,7 +33,7 @@ export interface DebugLogEntry {
   id: number;
   level: DebugLogLevel;
   category: string;
-  message: string;
+  message: UiText;
   createdAt: number;
 }
 
@@ -97,8 +98,8 @@ export interface ActionExecutionEvent {
   mode: ExecutionMode;
   outcome: ExecutionOutcome;
   processId?: number;
-  summary: string;
-  warnings: string[];
+  summary: UiText;
+  warnings: UiText[];
   executedAt: number;
 }
 
@@ -119,7 +120,7 @@ export interface ExecutionRecord {
 
 export interface RuntimeErrorEvent {
   category: string;
-  message: string;
+  message: UiText;
   encodedKey?: string;
   actionId?: string;
   createdAt: number;

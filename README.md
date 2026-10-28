@@ -64,6 +64,11 @@ Synapse completely.
 ### Supported devices
 
 - **Razer Naga V2 HyperSpeed** — full native support (onboard memory, DPI, polling rate, battery).
+- **Razer Naga V2 Pro, Naga Pro, Naga X** — recognised: DPI, polling rate and battery
+  work, the buttons work as a custom device. **Own one?** Press **Help verify** in the
+  Mouse tab: Sidearm reads the mouse (without changing it) and opens a
+  [Device Report](https://github.com/danscMax/Sidearm/issues/new?template=device_report.yml)
+  — that report is how the model gets full support.
 - **Any other mouse, keyboard or macro pad that sends keys** — add it as a custom
   device: Sidearm learns each button by its signal and maps it like the Naga's.
 
@@ -164,6 +169,11 @@ Synapse, Razer Central и фоновых служб Razer. Synapse можно у
 ### Поддерживаемые устройства
 
 - **Razer Naga V2 HyperSpeed** — полная поддержка (память мыши, DPI, частота опроса, заряд).
+- **Razer Naga V2 Pro, Naga Pro, Naga X** — распознаются: DPI, частота опроса и заряд
+  работают, кнопки — как у своего устройства. **Есть такая мышь?** Нажмите
+  **«Помочь проверить»** во вкладке «Мышь»: Sidearm прочитает мышь (ничего не меняя) и
+  откроет [отчёт об устройстве](https://github.com/danscMax/Sidearm/issues/new?template=device_report.yml)
+  — по нему модель получит полную поддержку.
 - **Любая другая мышь, клавиатура или макропад, которые шлют клавиши** — добавляются
   как своё устройство: Sidearm запоминает каждую кнопку по её сигналу.
 

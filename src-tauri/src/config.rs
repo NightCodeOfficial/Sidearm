@@ -272,10 +272,14 @@ pub struct Settings {
     #[serde(default)]
     pub show_battery_in_tray: bool,
     /// Profile written into the mouse on exit for use without Sidearm;
-    /// `None` = the profile in effect at that moment.
+    /// `None` = the fallback profile, [`OFFLINE_PROFILE_ACTIVE`] = the profile
+    /// in effect at that moment (whichever window happened to be focused).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offline_profile_id: Option<String>,
 }
+
+/// `Settings.offline_profile_id` value for "the profile in effect at exit".
+pub const OFFLINE_PROFILE_ACTIVE: &str = "@active";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3610,6 +3614,7 @@ mod tests {
         let opts = crate::synapse_import::ImportOptions {
             selected_profile_guids: None,
             merge_strategy: crate::synapse_import::MergeStrategy::ReplaceByName,
+            name_suffix: String::new(),
         };
         let result = crate::synapse_import::apply_parsed_into_config(base, parsed, &opts);
         let v = serde_json::to_value(&result.config).unwrap();

@@ -16,7 +16,7 @@ use std::path::Path;
 
 use crate::config::{ActionPayload, AppConfig, Layer, MouseActionKind};
 use crate::mouse_memory::{
-    OnboardAction, VendorDevice, hid_usage_for_vk, native_buttons, signal_action,
+    OnboardAction, VendorDevice, hid_usage_for_vk, left_modifier_bits, modifier_bits, native_buttons, signal_action,
     onboard_bindings,
 };
 
@@ -99,15 +99,22 @@ pub fn offline_records(config: &AppConfig, profile_id: &str) -> Vec<OfflineRecor
 fn onboard_action(payload: &ActionPayload) -> Option<OnboardAction> {
     match payload {
         ActionPayload::Shortcut(shortcut) => {
-            let modifier = modifier_mask(shortcut.ctrl, shortcut.shift, shortcut.alt, shortcut.win);
-            // Modifier-only (push-to-talk Alt+Shift): usage 0 = no key, the
-            // firmware holds just the modifiers while the button is down.
-            let usage = if shortcut.key.trim().is_empty() {
-                0
+            let (ctrl, shift, alt, win) = (shortcut.ctrl, shortcut.shift, shortcut.alt, shortcut.win);
+            // Modifier-only (push-to-talk): usage 0 = no key, the firmware holds
+            // just the modifiers while the button is down.
+            if shortcut.key.trim().is_empty() {
+                let modifier = modifier_bits(ctrl, shift, alt, win);
+                return (modifier != 0).then_some(OnboardAction::Key { modifier, usage: 0 });
+            }
+            let usage = hid_usage_for_vk(crate::hotkeys::parse_primary_key(&shortcut.key).ok()?.code)?;
+            // A plain key record drops the left Shift/Alt and the right Alt is
+            // AltGr on some layouts: a shortcut with Shift or Alt is tapped by the
+            // turbo record, which plays the real left keys (one tap per press).
+            Some(if shift || alt {
+                OnboardAction::KeyTap { modifier: left_modifier_bits(ctrl, shift, alt, win), usage }
             } else {
-                hid_usage_for_vk(crate::hotkeys::parse_primary_key(&shortcut.key).ok()?.code)?
-            };
-            (modifier != 0 || usage != 0).then_some(OnboardAction::Key { modifier, usage })
+                OnboardAction::Key { modifier: modifier_bits(ctrl, shift, alt, win), usage }
+            })
         }
         ActionPayload::MouseAction(mouse) if !(mouse.ctrl || mouse.shift || mouse.alt || mouse.win) => {
             Some(OnboardAction::Mouse(match mouse.action {
@@ -121,10 +128,6 @@ fn onboard_action(payload: &ActionPayload) -> Option<OnboardAction> {
         }
         _ => None,
     }
-}
-
-fn modifier_mask(ctrl: bool, shift: bool, alt: bool, win: bool) -> u8 {
-    u8::from(ctrl) | u8::from(shift) << 1 | u8::from(alt) << 2 | u8::from(win) << 3
 }
 
 /// Writes the offline profile into the mouse and leaves the marker. Best
@@ -210,14 +213,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn modifier_mask_matches_the_hid_bits() {
-        assert_eq!(modifier_mask(true, false, false, false), 0x01);
-        assert_eq!(modifier_mask(true, true, false, false), 0x03);
-        assert_eq!(modifier_mask(false, false, true, false), 0x04);
-        assert_eq!(modifier_mask(false, true, false, true), 0x0a);
-    }
-
-    #[test]
     fn shortcuts_and_mouse_buttons_have_a_firmware_form() {
         use crate::config::{MouseActionPayload, ShortcutActionPayload};
         let shortcut = |key: &str, ctrl: bool, shift: bool| {
@@ -232,8 +227,22 @@ mod tests {
         };
         assert_eq!(
             onboard_action(&shortcut("T", true, true)),
-            Some(OnboardAction::Key { modifier: 0x03, usage: 0x17 }),
-            "Ctrl+Shift+T as Synapse stored it"
+            // Tapped through the turbo record, which plays the left Shift.
+            Some(OnboardAction::KeyTap { modifier: 0x03, usage: 0x17 }),
+            "Ctrl+Shift+T"
+        );
+        let alt_f4 = ActionPayload::Shortcut(ShortcutActionPayload {
+            key: "F4".into(),
+            ctrl: false,
+            shift: false,
+            alt: true,
+            win: false,
+            raw: None,
+        });
+        assert_eq!(
+            onboard_action(&alt_f4),
+            Some(OnboardAction::KeyTap { modifier: 0x04, usage: 0x3d }),
+            "Alt+F4 taps the real left Alt"
         );
         assert_eq!(
             onboard_action(&shortcut("Delete", false, false)),
@@ -241,7 +250,7 @@ mod tests {
         );
         assert_eq!(
             onboard_action(&shortcut("", true, true)),
-            Some(OnboardAction::Key { modifier: 0x03, usage: 0 }),
+            Some(OnboardAction::Key { modifier: 0x21, usage: 0 }),
             "modifier-only is held as bare modifiers"
         );
         assert_eq!(onboard_action(&shortcut("", false, false)), None, "empty shortcut");

@@ -250,13 +250,14 @@ fn process_encoded_key_event(
 ) -> EventOutcome {
     // Accumulate log entries locally and flush in a single lock at the end to
     // avoid acquiring the runtime_store mutex multiple times per keypress.
-    let mut log_entries: Vec<(&str, String, bool)> = Vec::new(); // (source, message, is_warn)
+    let mut log_entries: Vec<(&str, crate::ui_text::UiText, bool)> = Vec::new(); // (source, message, is_warn)
 
     log_entries.push((
-        "перехват",
-        format!(
-            "Получен сигнал `{}` от бэкенда перехвата.",
-            event.encoded_key
+        "capture",
+        crate::ui_text!(
+            "capture.signalReceived",
+            "Got signal `{key}` from the capture backend.",
+            key = &event.encoded_key
         ),
         false,
     ));
@@ -306,10 +307,11 @@ fn process_encoded_key_event(
                     event.encoded_key
                 );
                 log_entries.push((
-                    "выполнение",
-                    format!(
-                        "Отпускание `{}` неоднозначно (несколько удержаний с тем же базовым ключом) — ничего не отпущено.",
-                        event.encoded_key
+                    "execution",
+                    crate::ui_text!(
+                        "capture.releaseAmbiguous",
+                        "Release of `{key}` is ambiguous (several holds share the same base key) — nothing was released.",
+                        key = &event.encoded_key
                     ),
                     true,
                 ));
@@ -322,8 +324,12 @@ fn process_encoded_key_event(
                 Ok(()) => {
                     log::info!("[capture] Hold-shortcut released for {}", event.encoded_key);
                     log_entries.push((
-                        "выполнение",
-                        format!("Отпущен удерживаемый шорткат для `{}`.", event.encoded_key),
+                        "execution",
+                        crate::ui_text!(
+                            "capture.holdReleased",
+                            "Released the held shortcut for `{key}`.",
+                            key = &event.encoded_key
+                        ),
                         false,
                     ));
                 }
@@ -333,10 +339,12 @@ fn process_encoded_key_event(
                         event.encoded_key
                     );
                     log_entries.push((
-                        "выполнение",
-                        format!(
-                            "Не удалось отпустить шорткат для `{}`: {e}",
-                            event.encoded_key
+                        "execution",
+                        crate::ui_text!(
+                            "capture.holdReleaseFailed",
+                            "Failed to release the shortcut for `{key}`: {e}",
+                            key = &event.encoded_key,
+                            e = e
                         ),
                         true,
                     ));
@@ -348,10 +356,11 @@ fn process_encoded_key_event(
                 event.encoded_key
             );
             log_entries.push((
-                "перехват",
-                format!(
-                    "Отпускание `{}` без активного удержания.",
-                    event.encoded_key
+                "capture",
+                crate::ui_text!(
+                    "capture.releaseWithoutHold",
+                    "Release of `{key}` without an active hold.",
+                    key = &event.encoded_key
                 ),
                 false,
             ));
@@ -379,8 +388,8 @@ fn process_encoded_key_event(
         Ok(result) => result,
         Err(message) => {
             let error = RuntimeErrorEvent {
-                category: "захват окна".into(),
-                message,
+                category: "windowCapture".into(),
+                message: message.into(),
                 encoded_key: Some(event.encoded_key.clone()),
                 action_id: None,
                 created_at: runtime::timestamp_millis(),
@@ -396,11 +405,12 @@ fn process_encoded_key_event(
     if is_fg_elevated {
         log_entries.push((
             "UIPI",
-            format!(
-                "Активное окно `{}` запущено с правами администратора. \
-                 SendInput заблокирован Windows (UIPI). \
-                 Запустите Sidearm от имени администратора или с uiAccess.",
-                capture_result.exe
+            crate::ui_text!(
+                "capture.elevatedForeground",
+                "The active window `{exe}` runs as administrator. \
+                 SendInput is blocked by Windows (UIPI). \
+                 Run Sidearm as administrator or with uiAccess.",
+                exe = &capture_result.exe
             ),
             true,
         ));
@@ -421,8 +431,11 @@ fn process_encoded_key_event(
 
     if capture_result.ignored {
         log_entries.push((
-            "перехват",
-            "Окно студии — используется fallback-профиль.".into(),
+            "capture",
+            crate::ui_text!(
+                "capture.ownWindowFallback",
+                "Sidearm's own window — using the fallback profile."
+            ),
             false,
         ));
     }
@@ -453,32 +466,37 @@ fn process_encoded_key_event(
     match preview.status {
         resolver::ResolutionStatus::Resolved => {
             log_entries.push((
-                "разрешение",
-                format!(
-                    "Сигнал `{}` разрешён в `{}` / `{}`.",
-                    preview.encoded_key,
-                    preview.control_id.as_deref().unwrap_or("н/д"),
-                    preview.layer.as_deref().unwrap_or("н/д")
+                "resolution",
+                crate::ui_text!(
+                    "capture.signalResolved",
+                    "Signal `{key}` resolved to `{control}` / `{layer}`.",
+                    key = &preview.encoded_key,
+                    control = preview.control_id.as_deref().unwrap_or("—"),
+                    layer = preview.layer.as_deref().unwrap_or("—")
                 ),
                 false,
             ));
         }
         resolver::ResolutionStatus::Unresolved | resolver::ResolutionStatus::Ambiguous => {
             log_entries.push((
-                "разрешение",
-                format!(
-                    "Сигнал `{}` не удалось разрешить: {}",
-                    preview.encoded_key, preview.reason
+                "resolution",
+                crate::ui_text!(
+                    "capture.signalUnresolved",
+                    "Signal `{key}` could not be resolved: {reason}",
+                    key = &preview.encoded_key,
+                    reason = &preview.reason
                 ),
                 true,
             ));
         }
         resolver::ResolutionStatus::ConditionUnmet => {
             log_entries.push((
-                "разрешение",
-                format!(
-                    "Сигнал `{}` разрешён, но условия действия не выполнены: {}",
-                    preview.encoded_key, preview.reason
+                "resolution",
+                crate::ui_text!(
+                    "capture.signalConditionUnmet",
+                    "Signal `{key}` resolved, but the action's conditions are not met: {reason}",
+                    key = &preview.encoded_key,
+                    reason = &preview.reason
                 ),
                 false,
             ));
@@ -504,10 +522,11 @@ fn process_encoded_key_event(
         && !can_execute_in_own_window(resolved_action.map(|action| &action.payload)) {
         log::info!("[capture] Not dispatched {}: Sidearm's own window", preview.encoded_key);
         log_entries.push((
-            "перехват",
-            format!(
-                "Окно Sidearm активно — `{}` только подсвечен, действие не выполнено.",
-                preview.encoded_key
+            "capture",
+            crate::ui_text!(
+                "capture.ownWindowActive",
+                "Sidearm's window is active — `{key}` was only highlighted, no action ran.",
+                key = &preview.encoded_key
             ),
             false,
         ));
@@ -557,10 +576,12 @@ fn process_encoded_key_event(
                 .and_then(|mut store| store.check_execution_throttle(binding_id, throttle_ms, now));
             if let Some(remaining_ms) = remaining {
                 log_entries.push((
-                    "выполнение",
-                    format!(
-                        "[throttle] `{}` пропущен — осталось {} мс.",
-                        preview.encoded_key, remaining_ms
+                    "execution",
+                    crate::ui_text!(
+                        "capture.throttled",
+                        "[throttle] `{key}` skipped — {ms} ms left.",
+                        key = &preview.encoded_key,
+                        ms = remaining_ms
                     ),
                     false,
                 ));
@@ -620,11 +641,12 @@ fn process_encoded_key_event(
                         preview.action_pretty.as_deref().unwrap_or("?"),
                     );
                     log_entries.push((
-                        "выполнение",
-                        format!(
-                            "Удержание шортката `{}` для `{}`.",
-                            preview.action_pretty.as_deref().unwrap_or("?"),
-                            preview.encoded_key
+                        "execution",
+                        crate::ui_text!(
+                            "capture.holdStarted",
+                            "Holding shortcut `{action}` for `{key}`.",
+                            action = preview.action_pretty.as_deref().unwrap_or("?"),
+                            key = &preview.encoded_key
                         ),
                         false,
                     ));
@@ -646,12 +668,13 @@ fn process_encoded_key_event(
                             mode: executor::ExecutionMode::Live,
                             outcome: executor::ExecutionOutcome::Injected,
                             process_id: None,
-                            summary: format!(
-                                "Удержание шортката `{}`.",
-                                preview.action_pretty.as_deref().unwrap_or("?")
+                            summary: crate::ui_text!(
+                                "capture.holdStartedSummary",
+                                "Holding shortcut `{action}`.",
+                                action = preview.action_pretty.as_deref().unwrap_or("?")
                             ),
                             warnings: if is_fg_elevated {
-                                vec!["Активное окно запущено с правами администратора — ввод может быть заблокирован (UIPI).".into()]
+                                vec![crate::ui_text!("capture.elevatedWarning", "The active window runs as administrator — input may be blocked (UIPI).")]
                             } else {
                                 Vec::new()
                             },
@@ -665,8 +688,8 @@ fn process_encoded_key_event(
                         event.encoded_key
                     );
                     let error_event = executor::RuntimeErrorEvent {
-                        category: "выполнение".into(),
-                        message: e,
+                        category: "execution".into(),
+                        message: e.into(),
                         encoded_key: Some(event.encoded_key.clone()),
                         action_id: preview.action_id.clone(),
                         created_at: runtime::timestamp_millis(),
@@ -682,8 +705,11 @@ fn process_encoded_key_event(
                 event.encoded_key
             );
             log_entries.push((
-                "выполнение",
-                "Запрошено удержание, но действие не шорткат; переключение на нажатие.".into(),
+                "execution",
+                crate::ui_text!(
+                    "capture.holdNotShortcut",
+                    "Hold requested, but the action is not a shortcut; switching to press."
+                ),
                 true,
             ));
             run_fire_and_forget(
@@ -727,7 +753,7 @@ fn run_fire_and_forget(
     config: &AppConfig,
     preview: &resolver::ResolvedInputPreview,
     _event: &EncodedKeyEvent,
-    mut log_entries: Vec<(&str, String, bool)>,
+    mut log_entries: Vec<(&str, crate::ui_text::UiText, bool)>,
     is_fg_elevated: bool,
 ) {
     // Name the control and the layer: "the wrong action fired" is otherwise
@@ -742,9 +768,10 @@ fn run_fire_and_forget(
     match executor::run_preview_action(config, preview) {
         Ok(mut execution) => {
             if is_fg_elevated {
-                execution.warnings.push(
-                    "Активное окно запущено с правами администратора — ввод может быть заблокирован (UIPI).".into()
-                );
+                execution.warnings.push(crate::ui_text!(
+                    "capture.elevatedWarning",
+                    "The active window runs as administrator — input may be blocked (UIPI)."
+                ));
             }
             log::info!(
                 "[capture] Action complete for {} (outcome: {:?})",
@@ -752,15 +779,17 @@ fn run_fire_and_forget(
                 execution.outcome
             );
             log_entries.push((
-                "выполнение",
-                format!(
-                    "Выполнено `{}` для `{}`.",
-                    execution.action_pretty, execution.encoded_key
+                "execution",
+                crate::ui_text!(
+                    "capture.actionDone",
+                    "Ran `{action}` for `{key}`.",
+                    action = &execution.action_pretty,
+                    key = &execution.encoded_key
                 ),
                 false,
             ));
             for warning in &execution.warnings {
-                log_entries.push(("выполнение", warning.clone(), true));
+                log_entries.push(("execution", warning.clone(), true));
             }
             flush_log_entries(runtime_store, log_entries);
             // Audit F003: apply the ProfileSwitch side effect HERE (live path only),
@@ -813,7 +842,8 @@ pub(crate) fn emit_profile_resolved_and_notify(
                 .resolved_profile_name
                 .as_deref()
                 .unwrap_or("Default");
-            crate::show_osd(app, profile_name, &config.settings);
+            let label = crate::ui_text::native(&crate::ui_text!("runtime.osdProfileLabel", "Profile:"));
+            crate::show_osd(app, &label, profile_name, &config.settings);
             #[cfg(target_os = "windows")]
             if let Some(profile) = capture_result
                 .resolved_profile_id
@@ -826,7 +856,7 @@ pub(crate) fn emit_profile_resolved_and_notify(
     }
 }
 
-fn flush_log_entries(runtime_store: &Arc<Mutex<RuntimeStore>>, entries: Vec<(&str, String, bool)>) {
+fn flush_log_entries(runtime_store: &Arc<Mutex<RuntimeStore>>, entries: Vec<(&str, crate::ui_text::UiText, bool)>) {
     if entries.is_empty() {
         return;
     }
@@ -866,9 +896,13 @@ fn emit_runtime_error(
             } else {
                 format!(" ({})", context.join(", "))
             };
+            // The context goes into the English text only: the translation
+            // keeps its key and params.
+            let mut message = event.message.clone();
+            message.text.push_str(&suffix);
             store.record_warn(
                 event.category.clone(),
-                format!("{}{}", event.message, suffix),
+                message,
             );
         }
         _ => {

@@ -1,4 +1,6 @@
 import type { AppConfig } from "./config";
+import i18n from "../i18n";
+import { modifierLabels, mouseActionLabel } from "./action-helpers";
 
 export type SourceKind = "synapseV4";
 
@@ -49,6 +51,28 @@ export type ParsedSequenceStep =
   | { kind: "send"; value: string }
   | { kind: "sleep"; delayMs: number };
 
+/** What an imported binding will do, in the `actionSummary.*` wording the
+ *  rest of the UI uses; a sequence counts the steps of its macro. */
+export function describeParsedAction(action: ParsedAction, macros: ParsedMacro[]): string {
+  switch (action.kind) {
+    case "shortcut":
+      return i18n.t("actionSummary.shortcut", {
+        value: [...modifierLabels(action), action.key].filter(Boolean).join(" + "),
+      });
+    case "mouseAction":
+      return i18n.t("actionSummary.mouse", { value: mouseActionLabel(action.action) ?? action.action });
+    case "sequence":
+      return i18n.t("actionSummary.sequence", {
+        count: macros.find((m) => m.synapseGuid === action.macroGuid)?.steps.length ?? 0,
+      });
+    case "textSnippet":
+    case "disabled":
+      return i18n.t(`action.type.${action.kind}`);
+    case "unmappable":
+      return i18n.t("synapseImport.unmappable");
+  }
+}
+
 export interface ImportWarning {
   code: string;
   message: string;
@@ -60,6 +84,8 @@ export type MergeStrategy = "append" | "replaceByName";
 export interface ImportOptions {
   selectedProfileGuids?: string[];
   mergeStrategy?: MergeStrategy;
+  /** The word added to a colliding profile name, in the UI language. */
+  nameSuffix?: string;
 }
 
 export interface ImportSummary {
