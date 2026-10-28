@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.6] — 2026-10-28
+
+### Changed
+- The Synapse import list shows what each imported binding will do
+  ("Shortcut: Ctrl + Shift + C", "Sequence of 2 steps", the mouse action)
+  instead of only its action type.
+
 ## [0.11.5] — 2026-10-28
 
 ### Fixed
