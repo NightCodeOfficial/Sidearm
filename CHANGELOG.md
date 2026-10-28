@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4] — 2026-10-28
+
 ### Fixed
 - The trigger-mode editor's "side buttons arrive one at a time" note shows only
   when the side buttons send consumer signals (with F13–F24 they arrive together).
