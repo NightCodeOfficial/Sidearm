@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3] — 2026-10-28
+
 ### Fixed
 - Without Sidearm, shortcuts with Alt (Alt+F4…) now work in the Russian layout
   too: the mouse taps them with the real left Alt and Shift through its "turbo"
