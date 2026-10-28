@@ -340,8 +340,12 @@ export interface SaveConfigResponse {
 
 export interface CommandError {
   code: string;
+  /** Already translated by `normalizeCommandError` when the backend sent a key. */
   message: string;
   details?: string[];
+  /** i18n key under `backend.` (Rust `CommandError::from_ui`) and its params. */
+  key?: string;
+  params?: Record<string, string>;
 }
 
 export type PathMode = "portable" | "roaming" | "portableFallback";

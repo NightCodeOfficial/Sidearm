@@ -69,6 +69,7 @@ export function SynapseImportModal({
         {
           selectedProfileGuids: Array.from(selected),
           mergeStrategy,
+          nameSuffix: t("profile.importSuffix"),
         },
         activeConfig,
       );

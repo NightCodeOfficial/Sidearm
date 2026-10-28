@@ -60,6 +60,8 @@ export type MergeStrategy = "append" | "replaceByName";
 export interface ImportOptions {
   selectedProfileGuids?: string[];
   mergeStrategy?: MergeStrategy;
+  /** The word added to a colliding profile name, in the UI language. */
+  nameSuffix?: string;
 }
 
 export interface ImportSummary {

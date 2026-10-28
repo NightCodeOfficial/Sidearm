@@ -69,7 +69,7 @@ pub struct DebugLogEntry {
     pub id: u64,
     pub level: DebugLogLevel,
     pub category: String,
-    pub message: String,
+    pub message: crate::ui_text::UiText,
     pub created_at: u64,
 }
 
@@ -235,18 +235,26 @@ impl RuntimeStore {
         self.active_config_version = Some(config_version);
         self.warning_count = warning_count;
 
-        log::info!("[рантайм] Перехват запущен, версия конфигурации {config_version}.");
+        log::info!("[runtime] Capture started, config version {config_version}.");
         self.push_log(
             DebugLogLevel::Info,
-            "рантайм",
-            format!("Перехват запущен, версия конфигурации {config_version}."),
+            "runtime",
+            crate::ui_text!(
+                "runtime.captureStarted",
+                "Capture started, config version {config_version}.",
+                config_version = config_version,
+            ),
         );
         if warning_count > 0 {
-            log::warn!("[рантайм] При запуске обнаружено предупреждений: {warning_count}.");
+            log::warn!("[runtime] Warnings found at startup: {warning_count}.");
             self.push_log(
                 DebugLogLevel::Warn,
-                "рантайм",
-                format!("При запуске обнаружено предупреждений: {warning_count}."),
+                "runtime",
+                crate::ui_text!(
+                    "runtime.startWarnings",
+                    "Warnings found at startup: {warning_count}.",
+                    warning_count = warning_count,
+                ),
             );
         }
 
@@ -256,8 +264,12 @@ impl RuntimeStore {
     pub fn stop(&mut self) -> RuntimeStateSummary {
         self.status = RuntimeStatus::Idle;
         self.last_notified_profile_id = None;
-        log::info!("[рантайм] Перехват остановлен.");
-        self.push_log(DebugLogLevel::Info, "рантайм", "Перехват остановлен.");
+        log::info!("[runtime] Capture stopped.");
+        self.push_log(
+            DebugLogLevel::Info,
+            "runtime",
+            crate::ui_text!("runtime.captureStopped", "Capture stopped."),
+        );
         self.summary()
     }
 
@@ -290,18 +302,26 @@ impl RuntimeStore {
         self.active_config_version = Some(config_version);
         self.warning_count = warning_count;
 
-        log::info!("[рантайм] Конфигурация перезагружена, версия {config_version}.");
+        log::info!("[runtime] Config reloaded, version {config_version}.");
         self.push_log(
             DebugLogLevel::Info,
-            "рантайм",
-            format!("Конфигурация перезагружена, версия {config_version}."),
+            "runtime",
+            crate::ui_text!(
+                "runtime.configReloaded",
+                "Config reloaded, version {config_version}.",
+                config_version = config_version,
+            ),
         );
         if warning_count > 0 {
-            log::warn!("[рантайм] После перезагрузки обнаружено предупреждений: {warning_count}.");
+            log::warn!("[runtime] Warnings found after reload: {warning_count}.");
             self.push_log(
                 DebugLogLevel::Warn,
-                "рантайм",
-                format!("После перезагрузки обнаружено предупреждений: {warning_count}."),
+                "runtime",
+                crate::ui_text!(
+                    "runtime.reloadWarnings",
+                    "Warnings found after reload: {warning_count}.",
+                    warning_count = warning_count,
+                ),
             );
         }
 
@@ -312,21 +332,21 @@ impl RuntimeStore {
         self.logs.iter().cloned().collect()
     }
 
-    pub fn record_info(&mut self, category: impl Into<String>, message: impl Into<String>) {
+    pub fn record_info(&mut self, category: impl Into<String>, message: impl Into<crate::ui_text::UiText>) {
         self.push_log(DebugLogLevel::Info, category, message);
     }
 
-    pub fn record_warn(&mut self, category: impl Into<String>, message: impl Into<String>) {
+    pub fn record_warn(&mut self, category: impl Into<String>, message: impl Into<crate::ui_text::UiText>) {
         self.push_log(DebugLogLevel::Warn, category, message);
     }
 
     #[allow(dead_code)]
-    pub fn record_error(&mut self, category: impl Into<String>, message: impl Into<String>) {
+    pub fn record_error(&mut self, category: impl Into<String>, message: impl Into<crate::ui_text::UiText>) {
         self.push_log(DebugLogLevel::Error, category, message);
     }
 
     #[allow(dead_code)]
-    pub fn record_debug(&mut self, category: impl Into<String>, message: impl Into<String>) {
+    pub fn record_debug(&mut self, category: impl Into<String>, message: impl Into<crate::ui_text::UiText>) {
         self.push_log(DebugLogLevel::Debug, category, message);
     }
 
@@ -334,7 +354,7 @@ impl RuntimeStore {
         &mut self,
         level: DebugLogLevel,
         category: impl Into<String>,
-        message: impl Into<String>,
+        message: impl Into<crate::ui_text::UiText>,
     ) {
         let category = category.into();
         let message = message.into();

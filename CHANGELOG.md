@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Messages from the backend — the runtime log, execution errors, live-test
+  results, the tray menu and tooltip, the on-screen notifications — follow the
+  UI language instead of always being Russian; the technical log is English.
+  Synapse imports name colliding profiles in the UI language too.
+
 ## [0.11.4] — 2026-10-28
 
 ### Fixed

@@ -1193,9 +1193,11 @@ impl CaptureBackendHandle {
             && let Ok(mut store) = runtime_store.lock()
         {
             store.record_warn(
-                "перехват",
-                "Не удалось запустить вспомогательный процесс перехвата. \
-                     Кнопки с зажатыми модификаторами (Ctrl/Shift) могут не срабатывать.",
+                "capture",
+                crate::ui_text!(
+                    "capture.helperStartFailed",
+                    "Could not start the capture helper process. Buttons with held modifiers (Ctrl/Shift) may not work."
+                ),
             );
         }
 
@@ -3747,15 +3749,18 @@ fn spawn_capture_helper(
             // mouse silently type digits into the foreground app.
             if trimmed == HELPER_ALERT_FACTORY_DEFAULTS {
                 log::warn!(
-                    "[capture] Мышь шлёт заводские цифры (1-12) вместо настроенных клавиш — \
-                     профиль Razer не применён (Synapse не запустился или бортовая память сброшена)."
+                    "[capture] The mouse is sending factory digits (1-12) instead of the configured keys — \
+                     the Razer profile is not applied (Synapse did not start or the onboard memory was reset)."
                 );
                 if let Ok(mut store) = runtime_store.lock() {
                     store.record_warn(
-                        "перехват",
-                        "Мышь шлёт заводские цифры (1-12) вместо настроенных клавиш — \
-                         профиль Razer не применён (Synapse не запустился или бортовая \
-                         память сброшена). Кнопки Sidearm не будут срабатывать.",
+                        "capture",
+                        crate::ui_text!(
+                            "capture.factoryDigitsDetected",
+                            "The mouse is sending factory digits (1-12) instead of the configured keys — \
+                             the Razer profile is not applied (Synapse did not start or the onboard \
+                             memory was reset). Sidearm buttons will not work."
+                        ),
                     );
                 }
                 let _ = app.emit(runtime::EVENT_MOUSE_DEFAULTS_SUSPECTED, ());
@@ -3852,9 +3857,12 @@ fn schedule_helper_restart(app: AppHandle, runtime_store: Arc<Mutex<RuntimeStore
         log::warn!("[capture] Capture helper keeps exiting — gave up restarting it.");
         if let Ok(mut store) = runtime_store.lock() {
             store.record_warn(
-                "перехват",
-                "Вспомогательный процесс перехвата завершился. Кнопки мыши и комбинации \
-                 с модификаторами перестанут срабатывать — перезапустите перехват.",
+                "capture",
+                crate::ui_text!(
+                    "capture.helperExited",
+                    "The capture helper process exited. Mouse buttons and modifier combinations \
+                     will stop working — restart capture."
+                ),
             );
         }
         crate::mouse_status::set_state(Some(app), crate::mouse_status::StatusKind::HelperLost, true);

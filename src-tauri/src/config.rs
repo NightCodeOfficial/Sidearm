@@ -3605,6 +3605,7 @@ mod tests {
         let opts = crate::synapse_import::ImportOptions {
             selected_profile_guids: None,
             merge_strategy: crate::synapse_import::MergeStrategy::ReplaceByName,
+            name_suffix: String::new(),
         };
         let result = crate::synapse_import::apply_parsed_into_config(base, parsed, &opts);
         let v = serde_json::to_value(&result.config).unwrap();

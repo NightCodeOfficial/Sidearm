@@ -4,6 +4,7 @@ import type { AppConfig, ControlId, Layer } from "../lib/config";
 import { ACTION_CATEGORIES } from "../lib/constants";
 import { isBuiltinControl, isKeyButton } from "../lib/onboard-mapping";
 import { getNativeModel, liveTestAction, listenEncodedKeyEvent, normalizeCommandError } from "../lib/backend";
+import { uiText } from "../lib/ui-text";
 import {
   expectedEncodedKeyForControl,
   isPlaceholderAction,
@@ -308,8 +309,8 @@ export function ActionPickerModal({
       const result = await liveTestAction(draftAction);
       const detail =
         result.warnings.length > 0
-          ? `${result.summary} — ${result.warnings.join("; ")}`
-          : result.summary;
+          ? `${uiText(result.summary)} — ${result.warnings.map(uiText).join("; ")}`
+          : uiText(result.summary);
       setTestResult({ ok: true, text: detail });
     } catch (error) {
       setTestResult({ ok: false, text: normalizeCommandError(error).message });

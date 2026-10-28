@@ -63,8 +63,8 @@ pub struct ActionExecutionEvent {
     pub outcome: ExecutionOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_id: Option<u32>,
-    pub summary: String,
-    pub warnings: Vec<String>,
+    pub summary: crate::ui_text::UiText,
+    pub warnings: Vec<crate::ui_text::UiText>,
     pub executed_at: u64,
 }
 
@@ -72,7 +72,7 @@ pub struct ActionExecutionEvent {
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeErrorEvent {
     pub category: String,
-    pub message: String,
+    pub message: crate::ui_text::UiText,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoded_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -83,7 +83,8 @@ pub struct RuntimeErrorEvent {
 #[derive(Debug)]
 pub struct ExecutorError {
     pub code: &'static str,
-    pub event: RuntimeErrorEvent,
+    /// Boxed: a `UiText` message makes the event large for an `Err` variant.
+    pub event: Box<RuntimeErrorEvent>,
 }
 
 pub fn execute_preview_action(
@@ -93,7 +94,7 @@ pub fn execute_preview_action(
     if preview.status != ResolutionStatus::Resolved {
         return Err(execution_error(
             "execution_blocked",
-            "выполнение",
+            "execution",
             &preview.reason,
             Some(preview.encoded_key.clone()),
             preview.action_id.clone(),
@@ -106,8 +107,11 @@ pub fn execute_preview_action(
         .ok_or_else(|| {
             execution_error(
                 "missing_action",
-                "выполнение",
-                "В разрешённом превью отсутствует ID действия.",
+                "execution",
+                crate::ui_text!(
+                    "execution.previewMissingActionId",
+                    "The resolved preview has no action ID."
+                ),
                 Some(preview.encoded_key.clone()),
                 None,
             )
@@ -120,8 +124,12 @@ pub fn execute_preview_action(
         .ok_or_else(|| {
             execution_error(
                 "missing_action",
-                "выполнение",
-                &format!("Действие `{action_id}` больше не существует в конфигурации."),
+                "execution",
+                crate::ui_text!(
+                    "execution.actionMissing",
+                    "Action `{action_id}` no longer exists in the config.",
+                    action_id = &action_id
+                ),
                 Some(preview.encoded_key.clone()),
                 Some(action_id.clone()),
             )
@@ -130,8 +138,8 @@ pub fn execute_preview_action(
     let (outcome, summary, warnings) = summarize_action(config, action).map_err(|message| {
         execution_error(
             "execution_failed",
-            "выполнение",
-            &message,
+            "execution",
+            message,
             Some(preview.encoded_key.clone()),
             Some(action_id.clone()),
         )
@@ -164,7 +172,7 @@ pub fn run_preview_action(
     if preview.status != ResolutionStatus::Resolved {
         return Err(execution_error(
             "execution_blocked",
-            "выполнение",
+            "execution",
             &preview.reason,
             Some(preview.encoded_key.clone()),
             preview.action_id.clone(),
@@ -177,8 +185,11 @@ pub fn run_preview_action(
         .ok_or_else(|| {
             execution_error(
                 "missing_action",
-                "выполнение",
-                "В разрешённом превью отсутствует ID действия.",
+                "execution",
+                crate::ui_text!(
+                    "execution.previewMissingActionId",
+                    "The resolved preview has no action ID."
+                ),
                 Some(preview.encoded_key.clone()),
                 None,
             )
@@ -191,8 +202,12 @@ pub fn run_preview_action(
         .ok_or_else(|| {
             execution_error(
                 "missing_action",
-                "выполнение",
-                &format!("Действие `{action_id}` больше не существует в конфигурации."),
+                "execution",
+                crate::ui_text!(
+                    "execution.actionMissing",
+                    "Action `{action_id}` no longer exists in the config.",
+                    action_id = &action_id
+                ),
                 Some(preview.encoded_key.clone()),
                 Some(action_id.clone()),
             )
@@ -237,7 +252,10 @@ pub fn run_preview_action(
             mode: ExecutionMode::Live,
             outcome: ExecutionOutcome::Noop,
             process_id: None,
-            summary: "Отключённое действие — ничего не выполнено.".into(),
+            summary: crate::ui_text!(
+                "execution.disabledNoop",
+                "Disabled action — nothing was executed."
+            ),
             warnings: Vec::new(),
             executed_at: timestamp_millis(),
         }),
@@ -269,7 +287,11 @@ pub fn run_preview_action(
                 mode: ExecutionMode::Live,
                 outcome: ExecutionOutcome::Switched,
                 process_id: None,
-                summary: format!("Переключение на профиль `{profile_name}`."),
+                summary: crate::ui_text!(
+                    "execution.profileSwitched",
+                    "Switched to profile `{profile_name}`.",
+                    profile_name = profile_name
+                ),
                 warnings: Vec::new(),
                 executed_at: timestamp_millis(),
             })
@@ -279,8 +301,11 @@ pub fn run_preview_action(
         // repair, disabled, sequences — is handled above.
         _ => Err(execution_error(
             "unsupported_live_execution",
-            "выполнение",
-            "Меню (Menu) пока не выполняется вживую — для него нужен всплывающий выбор пункта. Остальные типы действий поддержаны.",
+            "execution",
+            crate::ui_text!(
+                "execution.menuNotLive",
+                "Menu actions do not run live yet: they need a popup to pick an item. All other action types are supported."
+            ),
             Some(preview.encoded_key.clone()),
             Some(action_id),
         )),
@@ -330,11 +355,18 @@ pub fn live_test_action(
 fn summarize_action(
     config: &AppConfig,
     action: &Action,
-) -> Result<(ExecutionOutcome, String, Vec<String>), String> {
+) -> Result<
+    (ExecutionOutcome, crate::ui_text::UiText, Vec<crate::ui_text::UiText>),
+    crate::ui_text::UiText,
+> {
     match (&action.action_type, &action.payload) {
         (ActionType::Shortcut, ActionPayload::Shortcut(payload)) => Ok((
             ExecutionOutcome::Simulated,
-            format!("Отправит шорткат `{}`.", format_shortcut(payload)),
+            crate::ui_text!(
+                "execution.shortcutPreview",
+                "Will send shortcut `{shortcut}`.",
+                shortcut = format_shortcut(payload)
+            ),
             Vec::new(),
         )),
         (ActionType::TextSnippet, ActionPayload::TextSnippet(payload)) => {
@@ -342,15 +374,25 @@ fn summarize_action(
         }
         (ActionType::Sequence, ActionPayload::Sequence(payload)) => Ok((
             ExecutionOutcome::Simulated,
-            format!(
-                "Выполнит последовательность из {} шагов: {}.",
-                payload.steps.len(),
+            crate::ui_text!(
+                "execution.sequencePreview",
+                "Will run a sequence of {count} steps: {steps}.",
+                count = payload.steps.len(),
+                steps = payload
+                    .steps
+                    .iter()
+                    .map(|step| sequence_step_summary(step).text)
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            )
+            .param(
+                "steps",
                 payload
                     .steps
                     .iter()
-                    .map(sequence_step_summary)
+                    .map(|step| crate::ui_text::native(&sequence_step_summary(step)))
                     .collect::<Vec<_>>()
-                    .join(" -> ")
+                    .join(" -> "),
             ),
             Vec::new(),
         )),
@@ -359,20 +401,30 @@ fn summarize_action(
             let open_via_shell = is_url_target(target) || Path::new(target).is_dir();
             let mut warnings = Vec::new();
             if !open_via_shell && Path::new(target).is_absolute() && !Path::new(target).exists() {
-                warnings.push("Путь к цели запуска не существует.".into());
+                warnings.push(crate::ui_text!(
+                    "execution.launchTargetMissing",
+                    "The launch target path does not exist."
+                ));
             }
 
             let summary = if open_via_shell {
-                format!("Откроет `{}`.", payload.target)
+                crate::ui_text!(
+                    "execution.launchOpenPreview",
+                    "Will open `{target}`.",
+                    target = &payload.target
+                )
+            } else if payload.args.is_empty() {
+                crate::ui_text!(
+                    "execution.launchPreview",
+                    "Will launch `{target}`.",
+                    target = &payload.target
+                )
             } else {
-                format!(
-                    "Запустит `{}`{}.",
-                    payload.target,
-                    if payload.args.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" с {} арг.", payload.args.len())
-                    }
+                crate::ui_text!(
+                    "execution.launchPreviewArgs",
+                    "Will launch `{target}` with {count} args.",
+                    target = &payload.target,
+                    count = payload.args.len()
                 )
             };
 
@@ -380,10 +432,11 @@ fn summarize_action(
         }
         (ActionType::Menu, ActionPayload::Menu(payload)) => Ok((
             ExecutionOutcome::Simulated,
-            format!(
-                "Откроет меню с {} пунктами ({} активных).",
-                payload.items.len(),
-                count_enabled_menu_items(&payload.items)
+            crate::ui_text!(
+                "execution.menuPreview",
+                "Will open a menu with {items} items ({enabled} enabled).",
+                items = payload.items.len(),
+                enabled = count_enabled_menu_items(&payload.items)
             ),
             Vec::new(),
         )),
@@ -394,27 +447,42 @@ fn summarize_action(
         )),
         (ActionType::MediaKey, ActionPayload::MediaKey(payload)) => Ok((
             ExecutionOutcome::Simulated,
-            format!("Отправит медиа-клавишу `{:?}`.", payload.key),
+            crate::ui_text!(
+                "execution.mediaKeyPreview",
+                "Will send media key `{key}`.",
+                key = format!("{:?}", payload.key)
+            ),
             Vec::new(),
         )),
         (ActionType::ProfileSwitch, ActionPayload::ProfileSwitch(payload)) => Ok((
             ExecutionOutcome::Simulated,
-            format!("Переключит на профиль `{}`.", payload.target_profile_id),
+            crate::ui_text!(
+                "execution.profileSwitchPreview",
+                "Will switch to profile `{profile_id}`.",
+                profile_id = &payload.target_profile_id
+            ),
             Vec::new(),
         )),
         (ActionType::Disabled, ActionPayload::Disabled(_)) => Ok((
             ExecutionOutcome::Noop,
-            "Отключённое действие — ничего не выполняется.".into(),
+            crate::ui_text!(
+                "execution.disabledPreview",
+                "Disabled action — nothing will be executed."
+            ),
             Vec::new(),
         )),
         (ActionType::RepairClipboard, ActionPayload::RepairClipboard(_)) => Ok((
             ExecutionOutcome::Simulated,
-            "Починит кодировку буфера обмена (UTF-8 ↔ Latin-1).".into(),
+            crate::ui_text!(
+                "execution.repairClipboardPreview",
+                "Will repair the clipboard encoding (UTF-8 ↔ Latin-1)."
+            ),
             Vec::new(),
         )),
-        _ => Err(format!(
-            "Действие `{}` имеет несовместимый тип/полезную нагрузку.",
-            action.id
+        _ => Err(crate::ui_text!(
+            "execution.incompatiblePayload",
+            "Action `{action_id}` has an incompatible type/payload.",
+            action_id = &action.id
         )),
     }
 }
@@ -451,8 +519,13 @@ fn run_live_launch_action(
         crate::platform::shell::open_target(target).map_err(|message| {
             execution_error(
                 "execution_failed",
-                "выполнение",
-                &format!("Не удалось открыть `{}`: {message}", payload.target),
+                "execution",
+                crate::ui_text!(
+                    "execution.openFailed",
+                    "Failed to open `{target}`: {message}",
+                    target = &payload.target,
+                    message = message
+                ),
                 Some(preview.encoded_key.clone()),
                 action_id.clone(),
             )
@@ -472,7 +545,11 @@ fn run_live_launch_action(
             mode: ExecutionMode::Live,
             outcome: ExecutionOutcome::Spawned,
             process_id: None,
-            summary: format!("Открыто `{}`.", payload.target),
+            summary: crate::ui_text!(
+                "execution.launchOpened",
+                "Opened `{target}`.",
+                target = &payload.target
+            ),
             warnings: Vec::new(),
             executed_at: timestamp_millis(),
         });
@@ -494,7 +571,11 @@ fn run_live_launch_action(
         mode: ExecutionMode::Live,
         outcome: ExecutionOutcome::Spawned,
         process_id: Some(process_id),
-        summary: format!("Запущено `{}`.", payload.target),
+        summary: crate::ui_text!(
+            "execution.launchStarted",
+            "Started `{target}`.",
+            target = &payload.target
+        ),
         warnings: Vec::new(),
         executed_at: timestamp_millis(),
     })
@@ -518,8 +599,8 @@ fn run_live_sequence_action(
     validate_live_sequence(payload).map_err(|message| {
         execution_error(
             "unsupported_live_execution",
-            "выполнение",
-            &message,
+            "execution",
+            message,
             Some(preview.encoded_key.clone()),
             action_id.clone(),
         )
@@ -567,7 +648,7 @@ fn run_live_sequence_action(
                     input_synthesis::send_text(value).map_err(|message| {
                         execution_error(
                             "execution_failed",
-                            "выполнение",
+                            "execution",
                             &message,
                             Some(preview.encoded_key.clone()),
                             action_id.clone(),
@@ -592,7 +673,7 @@ fn run_live_sequence_action(
                         |message| {
                             execution_error(
                                 "execution_failed",
-                                "выполнение",
+                                "execution",
                                 &message,
                                 Some(preview.encoded_key.clone()),
                                 action_id.clone(),
@@ -620,9 +701,10 @@ fn run_live_sequence_action(
 
     let mut warnings = Vec::new();
     if launched_processes.len() > 1 {
-        warnings.push(format!(
-            "Последовательность запустила {} процессов; отображается только PID последнего.",
-            launched_processes.len()
+        warnings.push(crate::ui_text!(
+            "execution.sequenceMultiplePids",
+            "The sequence launched {count} processes; only the PID of the last one is shown.",
+            count = launched_processes.len()
         ));
     }
 
@@ -640,17 +722,20 @@ fn run_live_sequence_action(
         mode: ExecutionMode::Live,
         outcome,
         process_id: launched_processes.last().copied(),
-        summary: format!(
-            "Выполнена последовательность: {} шагов ввода, {} запусков.",
-            injected_input_steps,
-            launched_processes.len()
+        summary: crate::ui_text!(
+            "execution.sequenceDone",
+            "Sequence finished: {input_steps} input steps, {launches} launches.",
+            input_steps = injected_input_steps,
+            launches = launched_processes.len()
         ),
         warnings,
         executed_at: timestamp_millis(),
     })
 }
 
-fn validate_live_sequence(payload: &crate::config::SequenceActionPayload) -> Result<(), String> {
+fn validate_live_sequence(
+    payload: &crate::config::SequenceActionPayload,
+) -> Result<(), crate::ui_text::UiText> {
     for step in &payload.steps {
         match step {
             SequenceStep::Sleep { .. } => {}
@@ -668,13 +753,19 @@ fn validate_live_sequence(payload: &crate::config::SequenceActionPayload) -> Res
             }
             SequenceStep::Text { value, .. } => {
                 if value.contains('\0') {
-                    return Err("Текстовые шаги с NUL-символами не поддерживаются.".into());
+                    return Err(crate::ui_text!(
+                        "execution.textStepNul",
+                        "Text steps with NUL characters are not supported."
+                    ));
                 }
             }
             SequenceStep::Send { value, .. } => {
                 crate::hotkeys::parse_hotkey(value).map_err(|message| {
-                    format!(
-                        "Шаг отправки `{value}` не является поддерживаемым шорткатом: {message}"
+                    crate::ui_text!(
+                        "execution.sendStepUnsupported",
+                        "Send step `{value}` is not a supported shortcut: {message}",
+                        value = value,
+                        message = message
                     )
                 })?;
             }
@@ -712,7 +803,7 @@ fn run_live_shortcut_action(
         );
         execution_error(
             "execution_failed",
-            "выполнение",
+            "execution",
             &message,
             Some(preview.encoded_key.clone()),
             action_id.clone(),
@@ -751,7 +842,11 @@ fn run_live_shortcut_action(
         mode: ExecutionMode::Live,
         outcome: ExecutionOutcome::Injected,
         process_id: None,
-        summary: format!("Отправлен шорткат `{}`.", format_shortcut(payload)),
+        summary: crate::ui_text!(
+            "execution.shortcutSent",
+            "Sent shortcut `{shortcut}`.",
+            shortcut = format_shortcut(payload)
+        ),
         warnings: dispatch.warnings,
         executed_at: timestamp_millis(),
     })
@@ -773,7 +868,7 @@ fn run_live_mouse_action(
             );
             execution_error(
                 "execution_failed",
-                "выполнение",
+                "execution",
                 &message,
                 Some(preview.encoded_key.clone()),
                 action_id.clone(),
@@ -824,7 +919,7 @@ fn run_live_media_key_action(
         );
         execution_error(
             "execution_failed",
-            "выполнение",
+            "execution",
             &message,
             Some(preview.encoded_key.clone()),
             action_id.clone(),
@@ -845,7 +940,11 @@ fn run_live_media_key_action(
         mode: ExecutionMode::Live,
         outcome: ExecutionOutcome::Injected,
         process_id: None,
-        summary: format!("Отправлена медиа-клавиша `{key:?}`."),
+        summary: crate::ui_text!(
+            "execution.mediaKeySent",
+            "Sent media key `{key}`.",
+            key = format!("{key:?}")
+        ),
         warnings: Vec::new(),
         executed_at: timestamp_millis(),
     })
@@ -859,11 +958,18 @@ fn run_live_repair_clipboard_action(
     let (outcome, summary) = match input_synthesis::repair_clipboard() {
         Ok(Some(fixed)) => (
             ExecutionOutcome::Injected,
-            format!("Буфер обмена починен ({} симв.).", fixed.chars().count()),
+            crate::ui_text!(
+                "execution.clipboardRepaired",
+                "Clipboard repaired ({chars} chars).",
+                chars = fixed.chars().count()
+            ),
         ),
         Ok(None) => (
             ExecutionOutcome::Noop,
-            "Буфер обмена в порядке — чинить нечего.".into(),
+            crate::ui_text!(
+                "execution.clipboardOk",
+                "Clipboard is fine — nothing to repair."
+            ),
         ),
         Err(message) => {
             log::error!(
@@ -872,7 +978,7 @@ fn run_live_repair_clipboard_action(
             );
             return Err(execution_error(
                 "execution_failed",
-                "выполнение",
+                "execution",
                 &message,
                 Some(preview.encoded_key.clone()),
                 action_id,
@@ -900,7 +1006,7 @@ fn run_live_repair_clipboard_action(
     })
 }
 
-fn format_mouse_summary(payload: &MouseActionPayload) -> String {
+fn format_mouse_summary(payload: &MouseActionPayload) -> crate::ui_text::UiText {
     let modifiers: Vec<&str> = [
         (payload.ctrl, "Ctrl"),
         (payload.shift, "Shift"),
@@ -913,12 +1019,17 @@ fn format_mouse_summary(payload: &MouseActionPayload) -> String {
     .collect();
 
     if modifiers.is_empty() {
-        format!("Выполнено действие мыши `{:?}`.", payload.action)
+        crate::ui_text!(
+            "execution.mouseActionDone",
+            "Performed mouse action `{action}`.",
+            action = format!("{:?}", payload.action)
+        )
     } else {
-        format!(
-            "Выполнено действие мыши `{}` + `{:?}`.",
-            modifiers.join(" + "),
-            payload.action
+        crate::ui_text!(
+            "execution.mouseActionWithModifiers",
+            "Performed mouse action `{modifiers}` + `{action}`.",
+            modifiers = modifiers.join(" + "),
+            action = format!("{:?}", payload.action)
         )
     }
 }
@@ -933,8 +1044,8 @@ fn run_live_text_snippet_action(
     let live_text = resolve_live_text_snippet(config, payload).map_err(|message| {
         execution_error(
             "execution_failed",
-            "выполнение",
-            &message,
+            "execution",
+            message,
             Some(preview.encoded_key.clone()),
             action_id.clone(),
         )
@@ -957,7 +1068,7 @@ fn run_live_text_snippet_action(
         );
         execution_error(
             "execution_failed",
-            "выполнение",
+            "execution",
             &message,
             Some(preview.encoded_key.clone()),
             Some(action.id.clone()),
@@ -974,7 +1085,11 @@ fn run_live_text_snippet_action(
             "[executor] TextSnippet {{cursor}} repositioning failed for key {}: {message}",
             preview.encoded_key
         );
-        warnings.push(format!("Не удалось вернуть курсор к {{cursor}}: {message}"));
+        warnings.push(crate::ui_text!(
+            "execution.cursorRepositionFailed",
+            "Could not move the caret back to {{cursor}}: {message}",
+            message = message
+        ));
     }
 
     Ok(ActionExecutionEvent {
@@ -1019,8 +1134,8 @@ fn spawn_launch_target(
     let launch_request = validate_launch_request(payload).map_err(|message| {
         execution_error(
             "execution_failed",
-            "выполнение",
-            &message,
+            "execution",
+            message,
             Some(preview.encoded_key.clone()),
             action_id.clone(),
         )
@@ -1043,10 +1158,12 @@ fn spawn_launch_target(
                 );
                 execution_error(
                     "execution_failed",
-                    "выполнение",
-                    &format!(
-                        "Не удалось запустить `{}` без прав администратора: {error}",
-                        payload.target
+                    "execution",
+                    crate::ui_text!(
+                        "execution.launchDeElevatedFailed",
+                        "Failed to launch `{target}` without administrator rights: {error}",
+                        target = &payload.target,
+                        error = error
                     ),
                     Some(preview.encoded_key.clone()),
                     action_id,
@@ -1065,8 +1182,13 @@ fn spawn_launch_target(
         log::error!("[executor] Launch failed for `{}`: {error}", payload.target);
         execution_error(
             "execution_failed",
-            "выполнение",
-            &format!("Не удалось запустить `{}`: {error}", payload.target),
+            "execution",
+            crate::ui_text!(
+                "execution.launchFailed",
+                "Failed to launch `{target}`: {error}",
+                target = &payload.target,
+                error = error
+            ),
             Some(preview.encoded_key.clone()),
             action_id,
         )
@@ -1075,18 +1197,26 @@ fn spawn_launch_target(
 
 fn validate_launch_request(
     payload: &crate::config::LaunchActionPayload,
-) -> Result<LaunchRequest, String> {
+) -> Result<LaunchRequest, crate::ui_text::UiText> {
     let target = PathBuf::from(&payload.target);
     if !target.is_absolute() {
-        return Err("Цель запуска должна быть абсолютным путём.".into());
+        return Err(crate::ui_text!(
+            "execution.launchTargetNotAbsolute",
+            "The launch target must be an absolute path."
+        ));
     }
     if !target.exists() {
-        return Err(format!("Цель запуска `{}` не существует.", payload.target));
+        return Err(crate::ui_text!(
+            "execution.launchTargetNotFound",
+            "Launch target `{target}` does not exist.",
+            target = &payload.target
+        ));
     }
     if target.is_dir() {
-        return Err(format!(
-            "Цель запуска `{}` — это директория, а не файл.",
-            payload.target
+        return Err(crate::ui_text!(
+            "execution.launchTargetIsDirectory",
+            "Launch target `{target}` is a directory, not a file.",
+            target = &payload.target
         ));
     }
 
@@ -1098,18 +1228,23 @@ fn validate_launch_request(
 
     if let Some(working_dir) = &working_dir {
         if !working_dir.is_absolute() {
-            return Err("Рабочая директория должна быть абсолютным путём.".into());
+            return Err(crate::ui_text!(
+                "execution.workingDirNotAbsolute",
+                "The working directory must be an absolute path."
+            ));
         }
         if !working_dir.exists() {
-            return Err(format!(
-                "Рабочая директория `{}` не существует.",
-                working_dir.display()
+            return Err(crate::ui_text!(
+                "execution.workingDirNotFound",
+                "Working directory `{working_dir}` does not exist.",
+                working_dir = working_dir.display()
             ));
         }
         if !working_dir.is_dir() {
-            return Err(format!(
-                "Рабочая директория `{}` — не директория.",
-                working_dir.display()
+            return Err(crate::ui_text!(
+                "execution.workingDirNotDirectory",
+                "Working directory `{working_dir}` is not a directory.",
+                working_dir = working_dir.display()
             ));
         }
     }
@@ -1123,15 +1258,21 @@ fn validate_launch_request(
 fn summarize_text_snippet(
     config: &AppConfig,
     payload: &TextSnippetPayload,
-) -> Result<(ExecutionOutcome, String, Vec<String>), String> {
+) -> Result<
+    (ExecutionOutcome, crate::ui_text::UiText, Vec<crate::ui_text::UiText>),
+    crate::ui_text::UiText,
+> {
     let live_text = resolve_live_text_snippet(config, payload)?;
     Ok((
         ExecutionOutcome::Simulated,
-        format!(
-            "Вставит {} через {}.",
-            live_text.target_label,
-            paste_mode_name(live_text.paste_mode)
-        ),
+        crate::ui_text!(
+            "execution.snippetPreview",
+            "Will paste {target} via {mode}.",
+            target = &live_text.target_label.text,
+            mode = paste_mode_text(live_text.paste_mode).text
+        )
+        .param("target", crate::ui_text::native(&live_text.target_label))
+        .param("mode", crate::ui_text::native(&paste_mode_text(live_text.paste_mode))),
         live_text.warnings,
     ))
 }
@@ -1139,15 +1280,15 @@ fn summarize_text_snippet(
 struct ResolvedLiveTextSnippet {
     text: String,
     paste_mode: PasteMode,
-    target_label: String,
-    summary: String,
-    warnings: Vec<String>,
+    target_label: crate::ui_text::UiText,
+    summary: crate::ui_text::UiText,
+    warnings: Vec<crate::ui_text::UiText>,
 }
 
 fn resolve_live_text_snippet(
     config: &AppConfig,
     payload: &TextSnippetPayload,
-) -> Result<ResolvedLiveTextSnippet, String> {
+) -> Result<ResolvedLiveTextSnippet, crate::ui_text::UiText> {
     match payload {
         TextSnippetPayload::Inline {
             text,
@@ -1156,12 +1297,18 @@ fn resolve_live_text_snippet(
         } => Ok(ResolvedLiveTextSnippet {
             text: text.clone(),
             paste_mode: *paste_mode,
-            target_label: format!("инлайн-сниппет ({} симв.)", text.chars().count()),
-            summary: format!(
-                "Отправлен инлайн-сниппет ({} симв.) через {}.",
-                text.chars().count(),
-                paste_mode_name(*paste_mode)
+            target_label: crate::ui_text!(
+                "execution.targetInline",
+                "inline snippet ({chars} chars)",
+                chars = text.chars().count()
             ),
+            summary: crate::ui_text!(
+                "execution.inlineSnippetSent",
+                "Sent inline snippet ({chars} chars) via {mode}.",
+                chars = text.chars().count(),
+                mode = paste_mode_text(*paste_mode).text
+            )
+            .param("mode", crate::ui_text::native(&paste_mode_text(*paste_mode))),
             warnings: snippet_tag_warnings(tags),
         }),
         TextSnippetPayload::LibraryRef { snippet_id } => {
@@ -1169,33 +1316,46 @@ fn resolve_live_text_snippet(
                 .snippet_library
                 .iter()
                 .find(|candidate| candidate.id == *snippet_id)
-                .ok_or_else(|| format!("Сниппет `{snippet_id}` не найден в библиотеке."))?;
+                .ok_or_else(|| {
+                    crate::ui_text!(
+                        "execution.snippetNotInLibrary",
+                        "Snippet `{snippet_id}` was not found in the library.",
+                        snippet_id = snippet_id
+                    )
+                })?;
 
             Ok(ResolvedLiveTextSnippet {
                 text: snippet.text.clone(),
                 paste_mode: snippet.paste_mode,
-                target_label: format!(
-                    "сниппет `{}` ({} симв.)",
-                    snippet.name,
-                    snippet.text.chars().count()
+                target_label: crate::ui_text!(
+                    "execution.targetLibrary",
+                    "snippet `{name}` ({chars} chars)",
+                    name = &snippet.name,
+                    chars = snippet.text.chars().count()
                 ),
-                summary: format!(
-                    "Отправлен сниппет `{}` ({} симв.) через {}.",
-                    snippet.name,
-                    snippet.text.chars().count(),
-                    paste_mode_name(snippet.paste_mode)
-                ),
+                summary: crate::ui_text!(
+                    "execution.librarySnippetSent",
+                    "Sent snippet `{name}` ({chars} chars) via {mode}.",
+                    name = &snippet.name,
+                    chars = snippet.text.chars().count(),
+                    mode = paste_mode_text(snippet.paste_mode).text
+                )
+                .param("mode", crate::ui_text::native(&paste_mode_text(snippet.paste_mode))),
                 warnings: snippet_tag_warnings(&snippet.tags),
             })
         }
     }
 }
 
-fn snippet_tag_warnings(tags: &[String]) -> Vec<String> {
+fn snippet_tag_warnings(tags: &[String]) -> Vec<crate::ui_text::UiText> {
     if tags.is_empty() {
         Vec::new()
     } else {
-        vec![format!("Сниппет содержит теги: {}.", tags.join(", "))]
+        vec![crate::ui_text!(
+            "execution.snippetTags",
+            "Snippet has tags: {tags}.",
+            tags = tags.join(", ")
+        )]
     }
 }
 
@@ -1211,12 +1371,24 @@ fn count_enabled_menu_items(items: &[MenuItem]) -> usize {
         .sum()
 }
 
-fn sequence_step_summary(step: &SequenceStep) -> String {
+fn sequence_step_summary(step: &SequenceStep) -> crate::ui_text::UiText {
     match step {
-        SequenceStep::Send { value, .. } => format!("шорткат `{value}`"),
-        SequenceStep::Text { value, .. } => format!("текст {} симв.", value.chars().count()),
-        SequenceStep::Sleep { delay_ms } => format!("пауза {delay_ms}мс"),
-        SequenceStep::Launch { value, .. } => format!("запуск `{value}`"),
+        SequenceStep::Send { value, .. } => {
+            crate::ui_text!("execution.stepShortcut", "shortcut `{value}`", value = value)
+        }
+        SequenceStep::Text { value, .. } => crate::ui_text!(
+            "execution.stepText",
+            "text {chars} chars",
+            chars = value.chars().count()
+        ),
+        SequenceStep::Sleep { delay_ms } => crate::ui_text!(
+            "execution.stepPause",
+            "pause {delay_ms} ms",
+            delay_ms = delay_ms
+        ),
+        SequenceStep::Launch { value, .. } => {
+            crate::ui_text!("execution.stepLaunch", "launch `{value}`", value = value)
+        }
     }
 }
 
@@ -1240,10 +1412,12 @@ fn format_shortcut(payload: &crate::config::ShortcutActionPayload) -> String {
     parts.join(" + ")
 }
 
-fn paste_mode_name(paste_mode: PasteMode) -> &'static str {
+fn paste_mode_text(paste_mode: PasteMode) -> crate::ui_text::UiText {
     match paste_mode {
-        PasteMode::ClipboardPaste => "буфер обмена",
-        PasteMode::SendText => "ввод текста",
+        PasteMode::ClipboardPaste => {
+            crate::ui_text!("execution.pasteModeClipboard", "clipboard paste")
+        }
+        PasteMode::SendText => crate::ui_text!("execution.pasteModeText", "text input"),
     }
 }
 
@@ -1287,19 +1461,19 @@ pub fn evaluate_conditions(conditions: &[ActionCondition], exe: &str, title: &st
 fn execution_error(
     code: &'static str,
     category: &str,
-    message: &str,
+    message: impl Into<crate::ui_text::UiText>,
     encoded_key: Option<String>,
     action_id: Option<String>,
 ) -> ExecutorError {
     ExecutorError {
         code,
-        event: RuntimeErrorEvent {
+        event: Box::new(RuntimeErrorEvent {
             category: category.into(),
             message: message.into(),
             encoded_key,
             action_id,
             created_at: timestamp_millis(),
-        },
+        }),
     }
 }
 
@@ -1320,7 +1494,7 @@ mod tests {
 
         assert_eq!(result.outcome, ExecutionOutcome::Simulated);
         assert_eq!(result.action_type, "shortcut");
-        assert!(result.summary.contains("Отправит шорткат"));
+        assert!(result.summary.text.contains("Will send shortcut"));
     }
 
     #[test]
@@ -1493,7 +1667,7 @@ mod tests {
 
         let error = validate_launch_request(&payload).expect_err("expected invalid");
 
-        assert!(error.contains("абсолютным путём"));
+        assert!(error.text.contains("absolute path"));
     }
 
     #[test]
@@ -1530,7 +1704,7 @@ mod tests {
 
         let error = validate_live_sequence(&payload).expect_err("expected invalid sequence");
 
-        assert!(error.contains("поддерживаемым шорткатом"));
+        assert!(error.text.contains("not a supported shortcut"));
     }
 
     #[test]
@@ -1955,7 +2129,7 @@ mod edge_proptests {
         #[test]
         fn sequence_step_summary_sleep_contains_delay(delay_ms in any::<u32>()) {
             let step = SequenceStep::Sleep { delay_ms };
-            let summary = sequence_step_summary(&step);
+            let summary = sequence_step_summary(&step).text;
             prop_assert!(
                 summary.contains(&delay_ms.to_string()),
                 "summary '{}' must contain delay value {}",
@@ -1969,7 +2143,7 @@ mod edge_proptests {
         fn sequence_step_summary_text_char_count(value in ".*") {
             let expected_count = value.chars().count();
             let step = SequenceStep::Text { value, delay_ms: None, repeat: None };
-            let summary = sequence_step_summary(&step);
+            let summary = sequence_step_summary(&step).text;
             prop_assert!(
                 summary.contains(&expected_count.to_string()),
                 "summary '{}' must contain char count {}",
@@ -2143,16 +2317,16 @@ mod edge_proptests {
     }
 
     // -----------------------------------------------------------------------
-    // Boundary: paste_mode_name — total, no panic
+    // Boundary: paste_mode_text — total, no panic
     // -----------------------------------------------------------------------
 
     #[test]
-    fn paste_mode_name_total_coverage() {
+    fn paste_mode_text_total_coverage() {
         for mode in [PasteMode::ClipboardPaste, PasteMode::SendText] {
-            let name = paste_mode_name(mode);
+            let name = paste_mode_text(mode).text;
             assert!(
                 !name.is_empty(),
-                "paste_mode_name must return a non-empty string"
+                "paste_mode_text must return a non-empty string"
             );
         }
     }

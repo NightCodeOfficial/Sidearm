@@ -1,3 +1,4 @@
+mod ui_text;
 mod admin_autostart;
 mod backup;
 mod capture_backend;
@@ -164,7 +165,8 @@ fn is_foreground_fullscreen() -> bool {
 /// 2. Subsequent calls: window exists, emit event + position + show + auto-hide.
 ///
 /// This avoids startup flash, event loss, and foreground watcher interference.
-pub(crate) fn show_osd(app: &AppHandle, profile_name: &str, settings: &config::Settings) {
+/// Shows the OSD bubble: `label` (bold-less, may be empty) then `profile_name`.
+pub(crate) fn show_osd(app: &AppHandle, label: &str, profile_name: &str, settings: &config::Settings) {
     if !settings.osd_enabled {
         return;
     }
@@ -204,7 +206,7 @@ pub(crate) fn show_osd(app: &AppHandle, profile_name: &str, settings: &config::S
         config::OsdFontSize::Large => 14,
     };
     // Measure label (weight 500) and name (weight 700) separately
-    let label_width = measure_text_width("Профиль:", "Segoe UI", font_px, 500);
+    let label_width = if label.is_empty() { 0 } else { measure_text_width(label, "Segoe UI", font_px, 500) };
     let name_width = measure_text_width(profile_name, "Segoe UI", font_px, 700);
     let logical_padding = 16 + 8 + 16 + 8; // left-pad + gap + right-pad + safety (GDI vs WebView2)
     let logical_width = label_width + name_width + logical_padding;
@@ -287,6 +289,7 @@ pub(crate) fn show_osd(app: &AppHandle, profile_name: &str, settings: &config::S
         "osd-show",
         serde_json::json!({
             "name": profile_name,
+            "label": label,
             "fontSize": font_size_str,
             "animation": animation_str,
         }),
@@ -377,7 +380,7 @@ fn build_tray_menu(
     menu.append(&MenuItem::with_id(
         app,
         "active_profile",
-        format!("Активный профиль: {active_name}"),
+        crate::ui_text::native(&crate::ui_text!("runtime.trayActiveProfile", "Active profile: {profile_name}", profile_name = active_name)),
         false,
         None::<&str>,
     )?)?;
@@ -401,7 +404,7 @@ fn build_tray_menu(
     menu.append(&MenuItem::with_id(
         app,
         "create_rule",
-        "Создать правило для активного окна",
+        crate::ui_text::native(&crate::ui_text!("runtime.trayCreateRule", "Create a rule for the active window")),
         true,
         None::<&str>,
     )?)?;
@@ -409,9 +412,9 @@ fn build_tray_menu(
         app,
         "toggle_runtime",
         if is_running {
-            "Приостановить"
+            crate::ui_text::native(&crate::ui_text!("runtime.trayPause", "Pause"))
         } else {
-            "Слушать мышь"
+            crate::ui_text::native(&crate::ui_text!("runtime.trayListen", "Listen to the mouse"))
         },
         true,
         None::<&str>,
@@ -422,7 +425,7 @@ fn build_tray_menu(
         menu.append(&MenuItem::with_id(
             app,
             "relaunch_as_admin",
-            "Перезапустить от администратора",
+            crate::ui_text::native(&crate::ui_text!("runtime.trayRelaunchAsAdmin", "Restart as administrator")),
             true,
             None::<&str>,
         )?)?;
@@ -431,7 +434,7 @@ fn build_tray_menu(
     menu.append(&MenuItem::with_id(
         app,
         "quit",
-        "Выход",
+        crate::ui_text::native(&crate::ui_text!("runtime.trayQuit", "Quit")),
         true,
         None::<&str>,
     )?)?;
@@ -492,21 +495,26 @@ fn rebuild_tray_menu_from_config(app: &AppHandle, config: &config::AppConfig) {
         .and_then(|id| config.profiles.iter().find(|p| p.id == id))
         .map(|p| p.name.as_str())
         .unwrap_or("—");
-    let state_label = if is_running {
-        "слушает мышь"
+    // Nested parts are translated first: a param is plain text.
+    let state_label = crate::ui_text::native(&if is_running {
+        crate::ui_text!("runtime.trayListening", "listening to the mouse")
     } else {
-        "приостановлен"
-    };
+        crate::ui_text!("runtime.trayPaused", "paused")
+    });
     #[cfg(target_os = "windows")]
     let battery_line = onboard_guard::last_battery_percent()
-        .map(|percent| format!("\nМышь: {percent}%"))
+        .map(|percent| crate::ui_text::native(&crate::ui_text!("runtime.trayBattery", "\nMouse: {percent}%", percent = percent)))
         .unwrap_or_default();
     #[cfg(not(target_os = "windows"))]
     let battery_line = String::new();
-    if let Err(error) = tray.set_tooltip(Some(format!(
-        "Sidearm — {state_label}
-Профиль: {active_name}{battery_line}"
-    ))) {
+    let tooltip = crate::ui_text!(
+        "runtime.trayTooltip",
+        "Sidearm — {state_label}\nProfile: {profile_name}{battery_line}",
+        state_label = state_label,
+        profile_name = active_name,
+        battery_line = battery_line
+    );
+    if let Err(error) = tray.set_tooltip(Some(crate::ui_text::native(&tooltip))) {
         log::warn!("[tray] set_tooltip failed: {error}");
     }
     #[cfg(target_os = "windows")]
@@ -655,7 +663,7 @@ fn apply_global_shortcut(app: &AppHandle, desired: &str) {
     let shortcut: Shortcut = match desired.parse() {
         Ok(s) => s,
         Err(e) => {
-            let message = format!("Не удалось разобрать глобальную клавишу `{desired}`: {e}");
+            let message = crate::ui_text!("runtime.globalShortcutParseFailed", "Could not parse the global shortcut `{shortcut}`: {error}", shortcut = &desired, error = &e);
             log::warn!("[system] {message}");
             record_startup_runtime_error(app, runtime_store.inner(), "globalShortcut", message);
             return;
@@ -670,7 +678,7 @@ fn apply_global_shortcut(app: &AppHandle, desired: &str) {
             }
         })
     {
-        let message = format!("Не удалось зарегистрировать глобальную клавишу `{desired}`: {e}");
+        let message = crate::ui_text!("runtime.globalShortcutRegisterFailed", "Could not register the global shortcut `{shortcut}`: {error}", shortcut = &desired, error = &e);
         log::warn!("[system] {message}");
         record_startup_runtime_error(app, runtime_store.inner(), "globalShortcut", message);
         return; // Registration failed — the previous hotkey stays live.
@@ -1887,6 +1895,14 @@ pub(crate) fn restart_capture(app: &AppHandle, still_wanted: impl Fn() -> bool) 
     result.map(|()| true)
 }
 
+/// The frontend's translations of the `backend.*` keys (flat `area.name` →
+/// text) for the tray and the OSD; sent at start and on every language change.
+#[tauri::command]
+fn set_native_texts(app: AppHandle, texts: std::collections::HashMap<String, String>) {
+    crate::ui_text::set_native_texts(texts);
+    rebuild_tray_menu(&app);
+}
+
 #[tauri::command]
 async fn reload_runtime(
     app: AppHandle,
@@ -2016,10 +2032,9 @@ async fn set_admin_autostart(
 #[tauri::command]
 async fn relaunch_as_admin(app: AppHandle) -> Result<(), CommandError> {
     if window_capture::is_current_process_elevated() {
-        return Err(CommandError::new(
+        return Err(CommandError::from_ui(
             "already_elevated",
-            "Sidearm уже запущен с правами администратора.",
-            None,
+            crate::ui_text!("admin.alreadyElevated", "Sidearm is already running with administrator rights."),
         ));
     }
 
@@ -2053,11 +2068,11 @@ async fn relaunch_as_admin(app: AppHandle) -> Result<(), CommandError> {
         let code = result as isize;
         if code <= 32 {
             let message = if code == 5 {
-                "Запуск от администратора отменён в окне UAC."
+                crate::ui_text!("admin.elevationCancelled", "Elevation was cancelled in the UAC prompt.")
             } else {
-                "Не удалось перезапустить от администратора."
+                crate::ui_text!("admin.relaunchFailed", "Could not restart with administrator rights.")
             };
-            return Err(CommandError::new("relaunch_cancelled", message, None));
+            return Err(CommandError::from_ui("relaunch_cancelled", message));
         }
 
         // New elevated process launched successfully — release modifiers and
@@ -2072,7 +2087,7 @@ async fn relaunch_as_admin(app: AppHandle) -> Result<(), CommandError> {
         let _ = app;
         Err(CommandError::new(
             "unsupported_platform",
-            "Перезапуск от администратора поддерживается только в Windows.",
+            "Restarting as administrator is only supported on Windows.",
             None,
         ))
     }
@@ -2140,19 +2155,21 @@ async fn capture_active_window(
             let mut store = runtime_store.lock().recover_poison();
             if result.ignored {
                 store.record_warn(
-                    "захват окна",
+                    "windowCapture",
                     result
                         .ignore_reason
                         .clone()
-                        .unwrap_or_else(|| "Окно игнорируется.".into()),
+                        .map(crate::ui_text::UiText::from)
+                        .unwrap_or_else(|| crate::ui_text!("window.ignored", "The window is ignored.")),
                 );
             } else {
                 store.record_info(
-                    "захват окна",
-                    format!(
-                        "Захвачено `{}`, профиль `{}`.",
-                        result.exe,
-                        result.resolved_profile_id.as_deref().unwrap_or("н/д")
+                    "windowCapture",
+                    crate::ui_text!(
+                        "window.captured",
+                        "Captured `{exe}`, profile `{profile_id}`.",
+                        exe = &result.exe,
+                        profile_id = result.resolved_profile_id.as_deref().unwrap_or("—")
                     ),
                 );
             }
@@ -2170,7 +2187,8 @@ async fn capture_active_window(
             };
             if should_notify {
                 let profile_name = result.resolved_profile_name.as_deref().unwrap_or("Default");
-                show_osd(&app, profile_name, &settings);
+                let label = crate::ui_text::native(&crate::ui_text!("runtime.osdProfileLabel", "Profile:"));
+                show_osd(&app, &label, profile_name, &settings);
             }
         }
 
@@ -2394,30 +2412,40 @@ async fn preview_resolution(
         let mut store = runtime_store.lock().recover_poison();
         match preview.status {
             resolver::ResolutionStatus::Resolved => store.record_info(
-                "разрешение",
-                format!(
-                    "Разрешено `{}` в кнопку `{}` для профиля `{}`.",
-                    preview.encoded_key,
-                    preview.control_id.as_deref().unwrap_or("н/д"),
-                    preview.resolved_profile_id.as_deref().unwrap_or("н/д")
+                "resolution",
+                crate::ui_text!(
+                    "resolution.resolved",
+                    "Resolved `{encoded_key}` to control `{control_id}` for profile `{profile_id}`.",
+                    encoded_key = &preview.encoded_key,
+                    control_id = preview.control_id.as_deref().unwrap_or("—"),
+                    profile_id = preview.resolved_profile_id.as_deref().unwrap_or("—")
                 ),
             ),
             resolver::ResolutionStatus::Unresolved => store.record_warn(
-                "разрешение",
-                format!("Не разрешено `{}`: {}", preview.encoded_key, preview.reason),
+                "resolution",
+                crate::ui_text!(
+                    "resolution.unresolved",
+                    "Not resolved `{encoded_key}`: {reason}",
+                    encoded_key = &preview.encoded_key,
+                    reason = &preview.reason
+                ),
             ),
             resolver::ResolutionStatus::Ambiguous => store.record_warn(
-                "разрешение",
-                format!(
-                    "Неоднозначный результат `{}`: {}",
-                    preview.encoded_key, preview.reason
+                "resolution",
+                crate::ui_text!(
+                    "resolution.ambiguous",
+                    "Ambiguous result `{encoded_key}`: {reason}",
+                    encoded_key = &preview.encoded_key,
+                    reason = &preview.reason
                 ),
             ),
             resolver::ResolutionStatus::ConditionUnmet => store.record_info(
-                "разрешение",
-                format!(
-                    "Условия не выполнены для `{}`: {}",
-                    preview.encoded_key, preview.reason
+                "resolution",
+                crate::ui_text!(
+                    "resolution.conditionUnmet",
+                    "Conditions not met for `{encoded_key}`: {reason}",
+                    encoded_key = &preview.encoded_key,
+                    reason = &preview.reason
                 ),
             ),
         }
@@ -2491,28 +2519,32 @@ async fn resolve_and_execute_action(
                 let mut store = runtime_store.lock().recover_poison();
                 match mode {
                     ActionRunMode::DryRun => {
-                        let message = format!(
-                            "Пробное выполнение `{}` для `{}`.",
-                            event.action_pretty, event.encoded_key
+                        let message = crate::ui_text!(
+                            "execution.dryRun",
+                            "Dry run of `{action}` for `{encoded_key}`.",
+                            action = &event.action_pretty,
+                            encoded_key = &event.encoded_key
                         );
                         match event.outcome {
                             executor::ExecutionOutcome::Noop => {
-                                store.record_warn("выполнение", message);
+                                store.record_warn("execution", message);
                             }
                             _ => {
-                                store.record_info("выполнение", message);
+                                store.record_info("execution", message);
                             }
                         }
                         for warning in &event.warnings {
-                            store.record_warn("выполнение", warning.clone());
+                            store.record_warn("execution", warning.clone());
                         }
                     }
                     ActionRunMode::Live => {
                         store.record_info(
-                            "выполнение",
-                            format!(
-                                "Выполнено вживую `{}` для `{}`.",
-                                event.action_pretty, event.encoded_key
+                            "execution",
+                            crate::ui_text!(
+                                "execution.live",
+                                "Executed live `{action}` for `{encoded_key}`.",
+                                action = &event.action_pretty,
+                                encoded_key = &event.encoded_key
                             ),
                         );
                     }
@@ -2527,10 +2559,8 @@ async fn resolve_and_execute_action(
         }
         Err(error) => {
             emit_runtime_error(app, runtime_store, &error.event)?;
-            Err(CommandError::new(
-                error.code,
-                error.event.message.clone(),
-                Some(
+            Err(CommandError {
+                details: Some(
                     [
                         error.event.encoded_key.clone(),
                         error.event.action_id.clone(),
@@ -2539,7 +2569,8 @@ async fn resolve_and_execute_action(
                     .flatten()
                     .collect(),
                 ),
-            ))
+                ..CommandError::from_ui(error.code, error.event.message.clone())
+            })
         }
     }
 }
@@ -2604,11 +2635,10 @@ async fn live_test_action(
             .config;
 
     executor::live_test_action(&config, &action).map_err(|error| {
-        CommandError::new(
-            error.code,
-            error.event.message.clone(),
-            error.event.action_id.clone().map(|id| vec![id]),
-        )
+        CommandError {
+            details: error.event.action_id.clone().map(|id| vec![id]),
+            ..CommandError::from_ui(error.code, error.event.message.clone())
+        }
     })
 }
 
@@ -2636,7 +2666,7 @@ fn record_startup_runtime_error(
     app: &AppHandle,
     runtime_store: &Arc<Mutex<RuntimeStore>>,
     category: impl Into<String>,
-    message: impl Into<String>,
+    message: impl Into<crate::ui_text::UiText>,
 ) {
     let event = RuntimeErrorEvent {
         category: category.into(),
@@ -3728,6 +3758,7 @@ pub fn run() {
             start_runtime,
             stop_runtime,
             reload_runtime,
+            set_native_texts,
             rehook_capture,
             get_debug_log,
             get_log_directory,

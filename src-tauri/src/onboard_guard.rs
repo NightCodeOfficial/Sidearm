@@ -492,15 +492,16 @@ fn report_battery(app: &AppHandle, config: &crate::config::AppConfig, config_dir
         if let Err(error) = std::fs::write(&stamp_path, now.to_string()) {
             log::warn!("[onboard-guard] battery warning stamp not saved: {error}");
         }
-        let message = format!("Заряд мыши: {percent}%");
-        log::warn!("[onboard-guard] {message}");
+        let text = crate::ui_text!("guard.batteryLow", "Mouse battery: {percent}%", percent = percent);
+        log::warn!("[onboard-guard] {text}");
+        let message = crate::ui_text::native(&text);
         // The OSD window is created lazily and its first call only creates it:
         // give the WebView a moment so this warning is not the call that is lost.
         if app.get_webview_window("osd").is_none() {
-            crate::show_osd(app, &message, &config.settings);
+            crate::show_osd(app, "", &message, &config.settings);
             std::thread::sleep(Duration::from_secs(1));
         }
-        crate::show_osd(app, &message, &config.settings);
+        crate::show_osd(app, "", &message, &config.settings);
     }
 }
 
@@ -547,11 +548,14 @@ fn read_config(config_dir: &Path) -> Option<crate::config::AppConfig> {
 /// Puts a clean verdict into the runtime log (the Diagnostics panel) — once per
 /// change, not every tick.
 fn record_clean(runtime_store: &Arc<Mutex<RuntimeStore>>, buttons: usize) {
-    let message =
-        format!("Проверка мыши: режим Normal, все {buttons} кнопок совпадают с назначениями Sidearm.");
+    let message = crate::ui_text!(
+        "guard.mouseClean",
+        "Mouse check: Normal mode, all {buttons} buttons match the Sidearm assignments.",
+        buttons = buttons
+    );
     log::info!("[onboard-guard] {message}");
     if let Ok(mut store) = runtime_store.lock() {
-        store.record_info("перехват", message);
+        store.record_info("capture", message);
     }
 }
 
@@ -579,7 +583,7 @@ fn notify(
 
     log::warn!("[onboard-guard] {message}");
     if let Ok(mut store) = runtime_store.lock() {
-        store.record_warn("перехват", message);
+        store.record_warn("capture", message);
     }
     if app.webview_windows().is_empty() {
         return;
@@ -587,26 +591,30 @@ fn notify(
     let _ = app.emit(EVENT_ONBOARD_TAKEOVER, &event);
 }
 
-fn takeover_message(event: &TakeoverEvent) -> String {
+fn takeover_message(event: &TakeoverEvent) -> crate::ui_text::UiText {
     match (event.kind, event.restored) {
-        (TakeoverKind::Mode, true) => {
-            "Razer перехватил мышь (режим драйвера) — вернул управление Sidearm.".to_string()
-        }
-        (TakeoverKind::Mode, false) => {
-            "Razer удерживает мышь в режиме драйвера — вернуть управление не удалось.".to_string()
-        }
-        (TakeoverKind::Mappings, true) => format!(
-            "Razer перезаписал назначения кнопок ({}) — восстановил.",
-            event.controls.join(", ")
+        (TakeoverKind::Mode, true) => crate::ui_text!(
+            "guard.modeRestored",
+            "Razer took the mouse over (driver mode) — control returned to Sidearm."
         ),
-        (TakeoverKind::Mappings, false) => format!(
-            "Назначения кнопок перезаписаны ({}), восстановить не удалось.",
-            event.controls.join(", ")
+        (TakeoverKind::Mode, false) => crate::ui_text!(
+            "guard.modeNotRestored",
+            "Razer holds the mouse in driver mode — could not return control to Sidearm."
         ),
-        (TakeoverKind::RazerStarted, _) => {
-            "Запущен Razer Synapse — он будет перезаписывать кнопки; Sidearm проверяет мышь каждые 3 с."
-                .to_string()
-        }
+        (TakeoverKind::Mappings, true) => crate::ui_text!(
+            "guard.mappingsRestored",
+            "Razer overwrote the button assignments ({controls}) — restored them.",
+            controls = event.controls.join(", ")
+        ),
+        (TakeoverKind::Mappings, false) => crate::ui_text!(
+            "guard.mappingsNotRestored",
+            "Button assignments were overwritten ({controls}), could not restore them.",
+            controls = event.controls.join(", ")
+        ),
+        (TakeoverKind::RazerStarted, _) => crate::ui_text!(
+            "guard.razerStarted",
+            "Razer Synapse started — it will overwrite the buttons; Sidearm checks the mouse every 3 s."
+        ),
     }
 }
 

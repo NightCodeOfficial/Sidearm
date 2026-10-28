@@ -160,7 +160,7 @@ pub struct ImportWarning {
 #[serde(rename_all = "camelCase")]
 pub enum MergeStrategy {
     /// Append imported profiles as new entries. Name collisions get a
-    /// "(импорт)" suffix. (Default.)
+    /// "(imported)" suffix. (Default.)
     #[default]
     Append,
     /// Delete at most one existing profile whose name matches the imported one
@@ -176,6 +176,9 @@ pub struct ImportOptions {
     /// If Some, only these profile GUIDs are imported. None = all.
     pub selected_profile_guids: Option<Vec<String>>,
     pub merge_strategy: MergeStrategy,
+    /// The word a colliding profile name gets, in the UI language
+    /// ("Default (imported)", "Default (imported 3)"); empty = "imported".
+    pub name_suffix: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
