@@ -87,6 +87,13 @@ describe("resolveKeyName", () => {
     expect(resolveKeyName(ev({ key: "A" }))).toBe("A");
   });
 
+  it("preserves numpad identity when Num Lock changes event.key", () => {
+    expect(resolveKeyName(ev({ key: "1", code: "Numpad1" }))).toBe("Numpad1");
+    expect(resolveKeyName(ev({ key: "End", code: "Numpad1" }))).toBe("Numpad1");
+    expect(resolveKeyName(ev({ key: "Enter", code: "NumpadEnter" }))).toBe("NumpadEnter");
+    expect(resolveKeyName(ev({ key: "1", code: "Digit1" }))).toBe("1");
+  });
+
   it("falls back to event.code when key is Unidentified", () => {
     expect(resolveKeyName(ev({ key: "Unidentified", code: "F13" }))).toBe("F13");
   });

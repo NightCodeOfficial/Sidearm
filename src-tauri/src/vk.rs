@@ -30,6 +30,12 @@ pub const VK_SNAPSHOT: u16 = 0x2C;
 pub const VK_INSERT: u16 = 0x2D;
 pub const VK_DELETE: u16 = 0x2E;
 pub const VK_APPS: u16 = 0x5D;
+pub const VK_NUMPAD0: u16 = 0x60;
+pub const VK_MULTIPLY: u16 = 0x6A;
+pub const VK_ADD: u16 = 0x6B;
+pub const VK_SUBTRACT: u16 = 0x6D;
+pub const VK_DECIMAL: u16 = 0x6E;
+pub const VK_DIVIDE: u16 = 0x6F;
 pub const VK_NUMLOCK: u16 = 0x90;
 pub const VK_SCROLL: u16 = 0x91;
 

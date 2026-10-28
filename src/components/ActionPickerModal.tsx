@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AppConfig, ControlId, Layer } from "../lib/config";
-import { ACTION_CATEGORIES, MOUSE_ACTION_OPTIONS } from "../lib/constants";
+import { ACTION_CATEGORIES } from "../lib/constants";
 import { isBuiltinControl, isKeyButton } from "../lib/onboard-mapping";
 import { liveTestAction, listenEncodedKeyEvent, normalizeCommandError } from "../lib/backend";
 import {
@@ -17,6 +17,7 @@ import { CloseButton, HelpTip, ModalFooter, ModalShell, Notice } from "./shared"
 import {
   autoName,
   buildAction,
+  filterActionCategories,
   createInitialDrafts,
   describeAction,
   isSaveDisabled,
@@ -134,19 +135,7 @@ export function ActionPickerModal({
   }
   const [searchQuery, setSearchQuery] = useState("");
 
-  const filteredCategories = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return ACTION_CATEGORIES;
-    return ACTION_CATEGORIES.filter((cat) =>
-      [
-        cat.id,
-        cat.actionType,
-        t(cat.label),
-        t(`action.type.${cat.actionType}`),
-        ...(cat.actionType === "mouseAction" ? MOUSE_ACTION_OPTIONS.flatMap((item) => [item.value, t(item.label)]) : []),
-      ].some((value) => value.toLowerCase().includes(q)),
-    );
-  }, [searchQuery, t]);
+  const filteredCategories = useMemo(() => filterActionCategories(searchQuery, t), [searchQuery, t]);
 
   const effectiveCategory = filteredCategories.some((c) => c.id === activeCategory)
     ? activeCategory
@@ -400,6 +389,7 @@ export function ActionPickerModal({
                 onChange={setShortcutDraft}
                 isCapturing={isCapturing}
                 setIsCapturing={setIsCapturing}
+                searchQuery={searchQuery}
               />
             ) : null}
 

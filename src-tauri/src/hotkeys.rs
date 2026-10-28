@@ -79,6 +79,26 @@ pub fn parse_primary_key(raw: &str) -> Result<HotkeyKey, String> {
         return Ok(function_key);
     }
 
+    if let Some(name) = compact.strip_prefix("NUMPAD").or_else(|| compact.strip_prefix("NUM")) {
+        if let Ok(digit) = name.parse::<u16>()
+            && digit <= 9 && name.len() == 1
+        {
+            return Ok(simple_key(VK_NUMPAD0 + digit, false, &format!("Numpad{digit}")));
+        }
+        let (code, extended, canonical) = match name {
+            "MULTIPLY" | "*" => (VK_MULTIPLY, false, "NumpadMultiply"),
+            "ADD" | "+" => (VK_ADD, false, "NumpadAdd"),
+            "SUBTRACT" | "-" => (VK_SUBTRACT, false, "NumpadSubtract"),
+            "DECIMAL" | "." => (VK_DECIMAL, false, "NumpadDecimal"),
+            "DIVIDE" | "/" => (VK_DIVIDE, true, "NumpadDivide"),
+            "ENTER" => (VK_RETURN, true, "NumpadEnter"),
+            _ => (0, false, ""),
+        };
+        if code != 0 {
+            return Ok(simple_key(code, extended, canonical));
+        }
+    }
+
     match compact.as_str() {
         "ENTER" | "RETURN" => Ok(simple_key(VK_RETURN, false, "Enter")),
         "TAB" => Ok(simple_key(VK_TAB, false, "Tab")),
@@ -316,6 +336,29 @@ fn normalize_cyrillic_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numpad_keys_preserve_identity_and_extended_flags() {
+        for digit in 0..=9 {
+            for name in [format!("Num {digit}"), format!("Numpad{digit}")] {
+                let key = parse_primary_key(&name).unwrap();
+                assert_eq!(key.code, VK_NUMPAD0 + digit);
+                assert!(!key.extended);
+                assert_ne!(key.code, parse_primary_key(&digit.to_string()).unwrap().code);
+                assert_eq!(parse_hotkey(&format!("Ctrl+{}", key.display_name)).unwrap().key, key);
+            }
+        }
+        for (name, code, extended) in [
+            ("NumpadMultiply", VK_MULTIPLY, false), ("NumpadAdd", VK_ADD, false),
+            ("NumpadSubtract", VK_SUBTRACT, false), ("NumpadDecimal", VK_DECIMAL, false),
+            ("NumpadDivide", VK_DIVIDE, true), ("NumpadEnter", VK_RETURN, true),
+        ] {
+            let key = parse_hotkey(&format!("Shift+{name}")).unwrap().key;
+            assert_eq!((key.code, key.extended), (code, extended));
+        }
+        assert!(!parse_primary_key("Enter").unwrap().extended);
+        assert!(parse_primary_key("Numpad10").is_err());
+    }
 
     #[test]
     fn normalizes_seed_hypershift_hotkey() {

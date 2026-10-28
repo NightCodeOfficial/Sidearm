@@ -3297,6 +3297,34 @@ code {
 /* Canonical recipe covers fill/border/focus; only the row-fill is unique. */
 .capture-row input { flex: 1; }
 
+.key-browser { display: grid; gap: 8px; min-width: 0; }
+.key-browser__list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-xs);
+}
+.key-browser__key {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-card-bg);
+  color: var(--c-text);
+  font-size: var(--fs-caption);
+  text-align: left;
+  cursor: pointer;
+}
+.key-browser__key:hover, .key-browser__key[data-active="true"] { background: var(--c-bg); }
+.key-browser__key--selected { color: var(--c-accent); background: var(--c-accent-dim); }
+.key-browser__group { color: var(--c-text-muted); font-size: var(--fs-micro); }
+@media (max-width: 600px) { .key-browser__list { grid-template-columns: minmax(0, 1fr); } }
+
 /* Record-mode pulse — standalone so it works whether or not the input sits
    inside a `.field` (the global-shortcut CaptureRow in Settings does not). */
 .capture-active {

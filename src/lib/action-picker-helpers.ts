@@ -15,9 +15,24 @@ import type {
   SnippetLibraryItem,
   TriggerMode,
 } from "./config";
-import { ACTION_CATEGORIES } from "./constants";
+import { ACTION_CATEGORIES, MOUSE_ACTION_OPTIONS } from "./constants";
 import { mediaKeyLabel, modifierLabels, mouseActionLabel } from "./action-helpers";
 import { assertNever } from "./assertNever";
+import { searchKeys } from "./key-catalog";
+
+/** Search both categories and their assignable mouse/keyboard actions. */
+export function filterActionCategories(query: string, t: TFunction) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return ACTION_CATEGORIES;
+  return ACTION_CATEGORIES.filter((category) => [
+    category.id,
+    category.actionType,
+    t(category.label),
+    t(`action.type.${category.actionType}`),
+    ...(category.actionType === "mouseAction" ? MOUSE_ACTION_OPTIONS.flatMap((option) => [option.value, t(option.label)]) : []),
+  ].some((label) => label.toLowerCase().includes(normalized))
+    || (category.actionType === "shortcut" && searchKeys(query, t).length > 0));
+}
 
 /* ─────────────────────────────────────────────────────────
    Normalize Key Name
@@ -36,6 +51,8 @@ const KEY_NAME_MAP: Record<string, string> = {
  *  Chromium returns key="Unidentified" and code="" for F13-F24 (sent via SendInput).
  *  In that case, fall back to the deprecated keyCode (124=F13 … 135=F24). */
 export function resolveKeyName(event: KeyboardEvent | ReactKeyboardEvent): string {
+  // The physical numpad key is distinct from the number row, even with Num Lock off.
+  if (/^Numpad([0-9]|Multiply|Add|Subtract|Decimal|Divide|Enter)$/.test(event.code)) return event.code;
   // 1. Try event.key
   if (event.key && event.key !== "Unidentified") return event.key;
   // 2. Try event.code (e.g. "F13")
