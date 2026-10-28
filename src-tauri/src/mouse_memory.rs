@@ -103,6 +103,13 @@ const CATEGORY_CONSUMER: u8 = 0x0a;
 /// Category of the firmware Hypershift key (seen on the right button after
 /// Synapse stored its profile).
 const CATEGORY_HYPERSHIFT: u8 = 0x0c;
+/// Category of a "turbo" key record: `modifier, usage, period_hi, period_lo` —
+/// the key is tapped every period while the button is held. Unlike a plain key
+/// record it plays the LEFT Shift and Alt (measured 2026-10-27, Raw Input).
+const CATEGORY_TURBO_KEY: u8 = 0x0d;
+/// Turbo period of a [`OnboardAction::KeyTap`]: one tap per press for any press
+/// shorter than this (`0xffff` played nothing on hardware).
+const KEY_TAP_PERIOD_MS: u16 = 10_000;
 /// Sensor class: DPI get/set (OpenRazer naming, confirmed on this device).
 const CLASS_DPI: u8 = 0x04;
 const CMD_SET_DPI: u8 = 0x05;
@@ -176,6 +183,11 @@ pub fn button_id_for_control(control_id: &str) -> Option<u8> {
 /// HID modifier mask of a hotkey's modifiers.
 fn modifier_mask(modifiers: &crate::hotkeys::HotkeyModifiers) -> u8 {
     modifier_bits(modifiers.ctrl, modifiers.shift, modifiers.alt, modifiers.win)
+}
+
+/// Standard HID modifier mask (left-hand keys), for a [`OnboardAction::KeyTap`].
+pub fn left_modifier_bits(ctrl: bool, shift: bool, alt: bool, win: bool) -> u8 {
+    u8::from(ctrl) | u8::from(shift) << 1 | u8::from(alt) << 2 | u8::from(win) << 3
 }
 
 /// Key-record modifier mask for these modifiers (see [`MOD_SHIFT`]).
@@ -341,8 +353,12 @@ pub struct ButtonRecord {
 /// A record the firmware plays back on its own, without Sidearm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardAction {
-    /// A key with a HID modifier mask (Ctrl `0x01`, Shift `0x02`, Alt `0x04`, Win `0x08`).
+    /// A key held while the button is down, with a modifier mask from
+    /// [`modifier_bits`] (Shift and Alt as the right-hand keys).
     Key { modifier: u8, usage: u8 },
+    /// One tap of a key per press, with a standard HID mask ([`left_modifier_bits`]):
+    /// the turbo record, the only one that plays the left Shift and Alt.
+    KeyTap { modifier: u8, usage: u8 },
     /// A plain mouse button (`1` left … `5` forward).
     Mouse(u8),
     /// The firmware Hypershift key: while held, the buttons play their layer-1 records.
@@ -356,6 +372,10 @@ impl OnboardAction {
     fn bytes(self) -> Vec<u8> {
         match self {
             Self::Key { modifier, usage } => vec![CATEGORY_KEY, 0x02, modifier, usage],
+            Self::KeyTap { modifier, usage } => {
+                let [hi, lo] = KEY_TAP_PERIOD_MS.to_be_bytes();
+                vec![CATEGORY_TURBO_KEY, 0x04, modifier, usage, hi, lo]
+            }
             Self::Mouse(value) => vec![CATEGORY_MOUSE, 0x01, value],
             Self::Hypershift => vec![CATEGORY_HYPERSHIFT, 0x01, 0x01],
             Self::Consumer(usage) => {
@@ -369,6 +389,9 @@ impl OnboardAction {
         match self {
             Self::Key { modifier, usage } => {
                 held.category == CATEGORY_KEY && held.modifier == modifier && held.usage == usage
+            }
+            Self::KeyTap { modifier, usage } => {
+                held.category == CATEGORY_TURBO_KEY && held.modifier == modifier && held.usage == usage
             }
             Self::Mouse(value) => held.is_mouse_button(value),
             Self::Hypershift => held.category == CATEGORY_HYPERSHIFT,
@@ -1183,6 +1206,18 @@ mod tests {
     use super::*;
     use crate::device_catalog::NAGA_V2_HYPERSPEED;
 
+    /// The turbo record the hardware played with the left Shift/Alt: category
+    /// `0d`, four data bytes, period 10 000 ms big-endian.
+    #[test]
+    fn a_key_tap_is_a_turbo_record_with_a_long_period() {
+        let tap = OnboardAction::KeyTap { modifier: 0x04, usage: 0x3d };
+        assert_eq!(tap.bytes(), [0x0d, 0x04, 0x04, 0x3d, 0x27, 0x10]);
+        assert_eq!(left_modifier_bits(true, true, true, true), 0x0f);
+        let held = ButtonRecord { category: 0x0d, modifier: 0x04, usage: 0x3d };
+        assert!(tap.matches(&held));
+        assert!(!OnboardAction::Key { modifier: 0x04, usage: 0x3d }.matches(&held));
+    }
+
     /// Shift and Alt go out as the right-hand keys: the firmware drops the
     /// left ones (measured).
     #[test]
@@ -1459,7 +1494,11 @@ mod tests {
         let device = VendorDevice::open_connected().expect("connect a catalog mouse");
         let bindings: Vec<OnboardBinding> = (1..=4).map(|i| binding(&format!("thumb_{i:02}"), "F24")).collect();
         let saved = snapshot(&device, &bindings);
-        let records: [&[u8]; 4] = [&[0x02, 0x02, 0x00, 0xe2], &[0x02, 0x02, 0x20, 0xe2], &[0x02, 0x02, 0x00, 0xe1], &[0x02, 0x03, 0x00, 0xe2, 0x3d]];
+        // `SIDEARM_PROBE_TURBO=1`: TurboModeKey (`0d`, period 1000 ms) records
+        // with the left modifiers instead.
+        let turbo: [&[u8]; 4] = [&[0x0d, 0x04, 0x04, 0x73, 0x27, 0x10], &[0x0d, 0x04, 0x02, 0x73, 0x27, 0x10], &[0x0d, 0x04, 0x06, 0x73, 0x27, 0x10], &[0x0d, 0x04, 0x05, 0x73, 0x27, 0x10]];
+        let usages: [&[u8]; 4] = [&[0x02, 0x02, 0x00, 0xe2], &[0x02, 0x02, 0x20, 0xe2], &[0x02, 0x02, 0x00, 0xe1], &[0x02, 0x03, 0x00, 0xe2, 0x3d]];
+        let records = if std::env::var("SIDEARM_PROBE_TURBO").is_ok() { turbo } else { usages };
         for (b, record) in bindings.iter().zip(records) {
             let id = device.model().button_id_for(&b.control_id).unwrap();
             let mut args = vec![0x01, id, 0x00];
@@ -1471,7 +1510,7 @@ mod tests {
         }
         drop(device);
         println!("press thumbs 1..4 now");
-        let watched = [("LCtrl", 0xA2), ("LShift", 0xA0), ("LAlt", 0xA4), ("RShift", 0xA1), ("RAlt", 0xA5), ("F4", 0x73)];
+        let watched = [("LCtrl", 0xA2), ("LShift", 0xA0), ("LAlt", 0xA4), ("RShift", 0xA1), ("RAlt", 0xA5), ("F24", 0x87)];
         let mut held = [false; 6];
         let end = std::time::Instant::now() + std::time::Duration::from_secs(45);
         while std::time::Instant::now() < end {
