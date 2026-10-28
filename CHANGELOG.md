@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.5] — 2026-10-28
+
 ### Fixed
 - Messages from the backend — the runtime log, execution errors, live-test
   results, the tray menu and tooltip, the on-screen notifications — follow the
