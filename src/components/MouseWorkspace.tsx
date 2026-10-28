@@ -214,7 +214,11 @@ export function MouseWorkspace({
             </div>
           </div>
           <p className="panel__muted help-sm">
-            {overrides ? t("mouse.profileHelpOn") : t("mouse.profileHelpOff")}
+            {overrides
+              ? t("mouse.profileHelpOn")
+              : device === null
+                ? t("mouse.profileNeedsMouse")
+                : t("mouse.profileHelpOff")}
           </p>
 
           {overrides ? (

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { AppConfig, ControlId, Layer } from "../lib/config";
 import { ACTION_CATEGORIES } from "../lib/constants";
 import { isBuiltinControl, isKeyButton } from "../lib/onboard-mapping";
-import { liveTestAction, listenEncodedKeyEvent, normalizeCommandError } from "../lib/backend";
+import { getNativeModel, liveTestAction, listenEncodedKeyEvent, normalizeCommandError } from "../lib/backend";
 import {
   expectedEncodedKeyForControl,
   isPlaceholderAction,
@@ -102,6 +102,17 @@ export function ActionPickerModal({
 
   // Encoder signal state (user devices only — see isBuiltinControl)
   const builtinControl = controlId ? isBuiltinControl(config, controlId) : false;
+  // The mouse reports one key button at a time only with consumer signals; in
+  // F13..F24 mode two arrive together. Asked once per opened key button.
+  const keyButton = builtinControl && controlId !== undefined && isKeyButton(controlId);
+  const [consumerSignals, setConsumerSignals] = useState(false);
+  useEffect(() => {
+    if (!keyButton) return;
+    void getNativeModel().then(
+      (model) => setConsumerSignals(model.consumerSignals === true),
+      () => setConsumerSignals(false),
+    );
+  }, [keyButton]);
   const currentEncoderMapping = controlId && selectedLayer
     ? config.encoderMappings.find(
         (m) => m.controlId === controlId && m.layer === selectedLayer,
@@ -506,9 +517,7 @@ export function ActionPickerModal({
                     selectedLayer={selectedLayer}
                     physicalControls={config.physicalControls}
                     bindings={config.bindings}
-                    // shortcut: also shown in the F13..F24 rollback mode, where
-                    // both buttons do arrive together; pass the mode if it matters.
-                    sideButtonsOneAtATime={builtinControl && controlId !== undefined && isKeyButton(controlId)}
+                    sideButtonsOneAtATime={keyButton && consumerSignals}
                   />
                   <label className="field">
                     <span className="field__label">

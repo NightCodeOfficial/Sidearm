@@ -1319,6 +1319,7 @@
     "profileOverride": "Own settings",
     "profileHelpOff": "Switching to this profile leaves the mouse as it is.",
     "profileHelpOn": "Switching to this profile writes these values into the mouse.",
+    "profileNeedsMouse": "\"Own settings\" becomes available once Sidearm has read the mouse's DPI and polling rate — move the mouse or press \"Retry\" below.",
     "pollRate": "Polling rate",
     "pollRateCaption": "How often the mouse reports movement. Higher is smoother but drains the battery faster.",
     "pollRateOption": "{{hz}} Hz",

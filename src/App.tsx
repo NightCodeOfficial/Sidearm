@@ -119,7 +119,12 @@ function App() {
 
   const handleAutoSaveFailed = useCallback(
     (reason: string) => {
-      showToast(t("toast.saveFailedRollback", { reason }), "warning", { label: t("toast.openConfig"), onClick: () => { void openConfigFolder(); } });
+      showToast(t("toast.saveFailedRollback", { reason }), "warning", {
+        label: t("toast.openConfig"),
+        onClick: () => {
+          void openConfigFolder().catch((e: unknown) => showToast(normalizeCommandError(e).message, "warning"));
+        },
+      });
     },
     [showToast, t],
   );

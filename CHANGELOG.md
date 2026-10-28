@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The trigger-mode editor's "side buttons arrive one at a time" note shows only
+  when the side buttons send consumer signals (with F13–F24 they arrive together).
+- The greyed-out "Own settings" switch in the Mouse tab now says it waits for
+  the mouse's DPI and polling rate.
+- "Open folder" on the save-rollback toast reports its own failure.
+- README lists the recognised Naga V2 Pro / Pro / X and how to send a device report.
+
 ## [0.11.3] — 2026-10-28
 
 ### Fixed
