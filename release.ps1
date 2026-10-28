@@ -7,9 +7,10 @@
 #   2. CHANGELOG.md has a "## [x.y.z]" section -> the release notes
 #   3. The working tree is clean and the tag does not exist yet
 #   4. build_portable.ps1 (audit + build + assemble)
-#   5. Sidearm-Portable-vX.Y.Z.zip from ..\portable without data/ + SHA-256
+#   5. plans\release\out\Sidearm-Portable-vX.Y.Z.zip from ..\portable without
+#      data/ + SHA-256 (the folder is recreated, so only this release is there)
 #   6. -Publish only: asks to type the version, then tags, pushes the branch
-#      and the tag, and creates the GitHub release with the zip
+#      and the tag, creates the GitHub release with the zip, deletes plans\release\out
 #
 # Usage:
 #   .\release.ps1 -Version 0.11.0              - Checks, build, zip, notes (no publish)
@@ -34,8 +35,10 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $portable = Join-Path (Split-Path $root -Parent) 'portable'
 $tag = "v$Version"
-$zip = Join-Path $root "Sidearm-Portable-$tag.zip"
-$notesFile = Join-Path $root "release-notes-$tag.md"
+# Gitignored scratch dir: holds only the current release, emptied once published.
+$outDir = Join-Path $root 'plans\release\out'
+$zip = Join-Path $outDir "Sidearm-Portable-$tag.zip"
+$notesFile = Join-Path $outDir "release-notes-$tag.md"
 
 function Stop-Release([string]$Message) {
     Write-Fail $Message
@@ -91,7 +94,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $portable 'Sidearm.exe'))) { Stop-Re
 if (-not (Test-Path -LiteralPath (Join-Path $portable 'resources\MicrosoftEdgeWebview2Setup.exe'))) {
     Write-Warn "resources\MicrosoftEdgeWebview2Setup.exe is missing from the build (see build_portable.ps1)."
 }
-if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+if (Test-Path -LiteralPath $outDir) { Remove-Item -LiteralPath $outDir -Recurse -Force }
+New-Item -ItemType Directory -Path $outDir | Out-Null
 $items = Get-ChildItem -LiteralPath $portable -Force -Exclude 'data'
 Compress-Archive -Path $items.FullName -DestinationPath $zip
 $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -126,4 +130,5 @@ try {
     gh release create $tag $zip --title $tag --notes-file $notesFile --latest
     if ($LASTEXITCODE -ne 0) { Stop-Release "gh release create failed (tag $tag is pushed)." }
 } finally { Pop-Location }
+Remove-Item -LiteralPath $outDir -Recurse -Force
 Write-Ok "published $tag"
